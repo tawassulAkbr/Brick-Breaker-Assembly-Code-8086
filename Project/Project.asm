@@ -69,19 +69,37 @@ GameLoop:
     call ClearScreen
 
     cmp current_screen, 0
-    je ShowHome
+    jne G_1
+    call ShowHomePROC
+    jmp GameLoop
+G_1:
     cmp current_screen, 1
-    je ShowNameInput
+    jne G_2
+    call ShowNameInputPROC
+    jmp GameLoop
+G_2:
     cmp current_screen, 2
-    je ShowMenu
+    jne G_3
+    call ShowMenuPROC
+    jmp GameLoop
+G_3:
     cmp current_screen, 3
-    je ShowInstr
+    jne G_4
+    call ShowInstrPROC
+    jmp GameLoop
+G_4:
     cmp current_screen, 4
-    je ShowScores
+    jne G_5
+    call ShowScoresPROC
+    jmp GameLoop
+G_5:
     cmp current_screen, 5
-    je ShowGame
+    jne G_End
+    call ShowGamePROC
+G_End:
+    jmp GameLoop
 
-ShowHome:
+ShowHomePROC proc
     ; Top of the box
     mov dh, 7
     mov dl, 8
@@ -113,9 +131,11 @@ ShowHome:
     mov ah, 00h
     int 16h
     mov current_screen, 1 ; Goto Name Input
-    jmp GameLoop
+    ret
 
-ShowNameInput:
+ShowHomePROC endp
+
+ShowNameInputPROC proc
     mov dh, 9
     mov dl, 8
     mov si, offset prompt_top
@@ -228,9 +248,11 @@ NameInputBS:
 
 NameInputDone:
     mov current_screen, 2 ; Goto Menu
-    jmp GameLoop
+    ret
 
-ShowMenu:
+ShowNameInputPROC endp
+
+ShowMenuPROC proc
     ; Draw Box
     mov dh, 6
     mov dl, 10
@@ -336,18 +358,18 @@ M4: call PrintString
     je MenuDown
     cmp al, 13 ; Enter
     je MenuSelect
-    jmp GameLoop
+    ret
 
 MenuUp:
     cmp menu_selected, 0
     je GameLoop
     dec menu_selected
-    jmp GameLoop
+    ret
 MenuDown:
     cmp menu_selected, 3
     je GameLoop
     inc menu_selected
-    jmp GameLoop
+    ret
 MenuSelect:
     cmp menu_selected, 0
     je StartGame
@@ -360,19 +382,21 @@ MenuSelect:
 StartGame:
     mov bg_color, 0 ; 0 = Black background!
     mov current_screen, 5
-    jmp GameLoop
+    ret
 GoInstr:
     mov bg_color, 12 ; Light Red 0Ch
     mov current_screen, 3
-    jmp GameLoop
+    ret
 GoScore:
     mov bg_color, 2 ; Green 02h
     mov current_screen, 4
-    jmp GameLoop
+    ret
 ExitGame:
     jmp ExitProgram
 
-ShowInstr:
+ShowMenuPROC endp
+
+ShowInstrPROC proc
     mov dh, 4
     mov dl, 3
     mov si, offset wide_box_top
@@ -430,9 +454,11 @@ InstrBox:
     int 16h
     cmp al, 13
     je ReturnMenu
-    jmp GameLoop
+    ret
 
-ShowScores:
+ShowInstrPROC endp
+
+ShowScoresPROC proc
     mov dh, 4
     mov dl, 3
     mov si, offset wide_box_top
@@ -490,14 +516,16 @@ ScoreBox:
     int 16h
     cmp al, 13
     je ReturnMenu
-    jmp GameLoop
+    ret
 
 ReturnMenu:
     mov bg_color, 6
     mov current_screen, 2
-    jmp GameLoop
+    ret
 
-ShowGame:
+ShowScoresPROC endp
+
+ShowGamePROC proc
     ; Draw Bricks: 8 rows, 8 columns
     mov si, 0        ; row index
     mov bx, 10       ; starting y position (shifted up!)
@@ -583,8 +611,14 @@ DrawColLoop:
     mov bl, 0Fh
     call PrintString
 
-    mov dh, 22
-    mov dl, 32
+    mov dh, 23
+    mov dl, 2
+    mov si, offset hud_player
+    mov bl, 0Fh
+    call PrintString
+
+    mov dh, 23
+    mov dl, 10
     mov si, offset player_name
     mov bl, 0Eh
     call PrintString
@@ -671,7 +705,9 @@ WaitLoop:
     mov ah, 86h
     int 15h
 
-    jmp GameLoop
+    ret
+
+ShowGamePROC endp
 
 ExitProgram:
     mov ax, 03h
