@@ -17,28 +17,28 @@
     ball_dx         dw 2
     ball_dy         dw -2
 
-    wide_box_top    db '+-------------------------------+', 0
-    wide_box_empty  db '|                               |', 0
-    wide_box_bot    db '+-------------------------------+', 0
+    wide_box_top    db '___________________________________', 0
+    wide_box_empty  db '|                                 |', 0
+    wide_box_bot    db '|_________________________________|', 0
 
-    title_box_top   db '+-----------------------+', 0
+    title_box_top   db '_________________________', 0
     title_msg       db '|     BRICK BREAKER     |', 0
-    title_box_bot   db '+-----------------------+', 0
+    title_box_bot   db '|_______________________|', 0
     instruction_msg db 'PRESS ANY KEY TO START', 0
 
-    prompt_top      db '+-----------------------+', 0
+    prompt_top      db '_________________________', 0
     prompt_msg      db '| Enter Player Name:    |', 0
     prompt_mid      db '|                       |', 0
-    prompt_bot      db '+-----------------------+', 0
+    prompt_bot      db '|_______________________|', 0
     
     menu_start      db '  Start Game      ', 0
     menu_inst       db '  Instructions    ', 0
     menu_score      db '  High Scores     ', 0
     menu_exit       db '  Exit            ', 0
 
-    menu_box_top    db '+------------------+', 0
+    menu_box_top    db '___________________', 0
     menu_box_empty  db '|                  |', 0
-    menu_box_bot    db '+------------------+', 0
+    menu_box_bot    db '|__________________|', 0
 
     instr_title     db 'INSTRUCTIONS', 0
     instr_1         db 'Use Left/Right to move', 0
@@ -54,6 +54,7 @@
     hud_score       db 'Score: 0000', 0
     hud_lives       db 'Lives: 3', 0
     hud_level       db 'Level: 1', 0
+    hud_player      db 'Player: ', 0
 
 .code
 main proc
