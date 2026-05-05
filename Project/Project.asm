@@ -11,40 +11,36 @@
     name_len        db 0
     row_colors      db 0Eh, 0Ch, 0Ah, 0Bh, 0Dh, 09h, 2Ah, 04h
     rect_height     dw 10
-    paddle_x        dw 130
-    ball_x          dw 158
-    ball_y          dw 145
-    ball_dx         dw 2
-    ball_dy         dw -2
 
-    wide_box_top    db '+----------------------------------+', 0
-    wide_box_empty  db '|                                  |',  0
-    wide_box_bot    db '+----------------------------------+', 0
+    wide_box_top    db '+-------------------------------+', 0
+    wide_box_empty  db '|                               |', 0
+    wide_box_bot    db '+-------------------------------+', 0
 
-    title_box_top   db '+--------------------------+', 0
-    title_msg       db '|     BRICK BREAKER        |', 0
-    title_box_bot   db '+--------------------------+', 0
-    instruction_msg db 'PRESS ANY KEY TO START!', 0
+    title_box_top   db '+-----------------------+', 0
+    title_msg       db '|     BRICK BREAKER     |', 0
+    title_box_bot   db '+-----------------------+', 0
+    instruction_msg db 'PRESS ANY KEY TO START', 0
 
-    prompt_top      db '+--------------------------+', 0
-    prompt_msg      db '| Enter Player Name:       |', 0
-    prompt_mid      db '|                          |', 0
-    prompt_bot      db '+--------------------------+', 0
+    prompt_top      db '+-----------------------+', 0
+    prompt_msg      db '| Enter Player Name:    |', 0
+    prompt_mid      db '|                       |', 0
+    prompt_bot      db '+-----------------------+', 0
     
-    menu_start      db '      Start Game          ', 0
-    menu_inst       db '      Instructions        ', 0
-    menu_score      db '      High Scores         ', 0
-    menu_exit       db '      Exit                ', 0
+    menu_start      db '  Start Game      ', 0
+    menu_inst       db '  Instructions    ', 0
+    menu_score      db '  High Scores     ', 0
+    menu_exit       db '  Exit            ', 0
 
-    menu_box_top    db '+--------------------------+', 0
-    menu_box_empty  db '|                          |', 0
-    menu_box_bot    db '+--------------------------+', 0
+    menu_box_top    db '+------------------+', 0
+    menu_box_empty  db '|                  |', 0
+    menu_box_bot    db '+------------------+', 0
 
     instr_title     db 'INSTRUCTIONS', 0
     instr_1         db 'Use Left/Right to move', 0
     instr_2         db 'Bounce ball to break bricks', 0
     instr_3         db 'Do not let the ball fall!', 0
-    instr_ret       db 'Press Enter to return', 0
+    instr_4         db 'Collect bonuses for extra power', 0
+    instr_ret       db 'Press Enter/Backspace', 0
 
     score_title     db 'HIGH SCORES', 0
     score_1         db '1. Tawassul - 5000', 0
@@ -54,7 +50,6 @@
     hud_score       db 'Score: 0000', 0
     hud_lives       db 'Lives: 3', 0
     hud_level       db 'Level: 1', 0
-    hud_player      db 'Player: ', 0
 
 .code
 main proc
@@ -69,37 +64,19 @@ GameLoop:
     call ClearScreen
 
     cmp current_screen, 0
-    jne G_1
-    call ShowHomePROC
-    jmp GameLoop
-G_1:
+    je ShowHome
     cmp current_screen, 1
-    jne G_2
-    call ShowNameInputPROC
-    jmp GameLoop
-G_2:
+    je ShowNameInput
     cmp current_screen, 2
-    jne G_3
-    call ShowMenuPROC
-    jmp GameLoop
-G_3:
+    je ShowMenu
     cmp current_screen, 3
-    jne G_4
-    call ShowInstrPROC
-    jmp GameLoop
-G_4:
+    je ShowInstr
     cmp current_screen, 4
-    jne G_5
-    call ShowScoresPROC
-    jmp GameLoop
-G_5:
+    je ShowScores
     cmp current_screen, 5
-    jne G_End
-    call ShowGamePROC
-G_End:
-    jmp GameLoop
+    je ShowGame
 
-ShowHomePROC proc
+ShowHome:
     ; Top of the box
     mov dh, 7
     mov dl, 8
@@ -131,11 +108,9 @@ ShowHomePROC proc
     mov ah, 00h
     int 16h
     mov current_screen, 1 ; Goto Name Input
-    ret
+    jmp GameLoop
 
-ShowHomePROC endp
-
-ShowNameInputPROC proc
+ShowNameInput:
     mov dh, 9
     mov dl, 8
     mov si, offset prompt_top
@@ -248,11 +223,9 @@ NameInputBS:
 
 NameInputDone:
     mov current_screen, 2 ; Goto Menu
-    ret
+    jmp GameLoop
 
-ShowNameInputPROC endp
-
-ShowMenuPROC proc
+ShowMenu:
     ; Draw Box
     mov dh, 6
     mov dl, 10
@@ -310,7 +283,7 @@ ShowMenuPROC proc
 
     mov dh, 15
     mov dl, 10
-    mov si, offset menu_box_top
+    mov si, offset menu_box_bot
     mov bl, 0Fh
     call PrintString
 
@@ -358,18 +331,28 @@ M4: call PrintString
     je MenuDown
     cmp al, 13 ; Enter
     je MenuSelect
-    ret
+    cmp al, 8  ; Backspace
+    je GoNameInput
+    jmp GameLoop
+
+GoNameInput:
+    mov name_len, 0
+    mov byte ptr player_name, 0
+
+    mov current_screen, 1
+    mov bg_color, 6
+    jmp GameLoop
 
 MenuUp:
     cmp menu_selected, 0
     je GameLoop
     dec menu_selected
-    ret
+    jmp GameLoop
 MenuDown:
     cmp menu_selected, 3
     je GameLoop
     inc menu_selected
-    ret
+    jmp GameLoop
 MenuSelect:
     cmp menu_selected, 0
     je StartGame
@@ -382,21 +365,19 @@ MenuSelect:
 StartGame:
     mov bg_color, 0 ; 0 = Black background!
     mov current_screen, 5
-    ret
+    jmp GameLoop
 GoInstr:
     mov bg_color, 12 ; Light Red 0Ch
     mov current_screen, 3
-    ret
+    jmp GameLoop
 GoScore:
     mov bg_color, 2 ; Green 02h
     mov current_screen, 4
-    ret
+    jmp GameLoop
 ExitGame:
     jmp ExitProgram
 
-ShowMenuPROC endp
-
-ShowInstrPROC proc
+ShowInstr:
     mov dh, 4
     mov dl, 3
     mov si, offset wide_box_top
@@ -445,20 +426,26 @@ InstrBox:
     call PrintString
 
     mov dh, 14
-    mov dl, 9
-    mov si, offset instr_ret
-    mov bl, 08h ; Dark Gray
+    mov dl, 5
+    mov si, offset instr_4
+    mov bl, 0Eh
     call PrintString
 
+    mov dh, 16
+    mov dl, 9
+    mov si, offset instr_ret
+    mov bl, 08h
+    call PrintString
+    
     mov ah, 00h
     int 16h
     cmp al, 13
     je ReturnMenu
-    ret
+    cmp al, 8 ; Backspace
+    je ReturnMenu
+    jmp GameLoop
 
-ShowInstrPROC endp
-
-ShowScoresPROC proc
+ShowScores:
     mov dh, 4
     mov dl, 3
     mov si, offset wide_box_top
@@ -516,19 +503,19 @@ ScoreBox:
     int 16h
     cmp al, 13
     je ReturnMenu
-    ret
+    cmp al, 8 ; Backspace
+    je ReturnMenu
+    jmp GameLoop
 
 ReturnMenu:
     mov bg_color, 6
     mov current_screen, 2
-    ret
+    jmp GameLoop
 
-ShowScoresPROC endp
-
-ShowGamePROC proc
-    ; Draw Bricks: 8 rows, 8 columns
+ShowGame:
+    ; Draw Bricks: 5 rows, 8 columns
     mov si, 0        ; row index
-    mov bx, 10       ; starting y position (shifted up!)
+    mov bx, 25       ; starting y position (beneath header)
 
 DrawRowLoop:
     mov cx, 25       ; starting x position resets for every row
@@ -559,7 +546,7 @@ DrawColLoop:
 
     ; Draw Slider (Paddle)
     mov bx, 155     ; y position
-    mov cx, paddle_x ; dynamic x position
+    mov cx, 130      ; x position
     mov dx, 60       ; paddle width
     mov al, 0Ch      ; color Light Red
     mov rect_height, 8 ; paddle height
@@ -567,147 +554,61 @@ DrawColLoop:
 
     ; Draw Round Ball 
     ; Top line
-    mov bx, ball_y   ; dynamic y
-    mov cx, ball_x
-    inc cx           ; indent 1
+    mov bx, 145      ; y position
+    mov cx, 159      ; x position (indent 1)
     mov dx, 4        ; line width
     mov al, 0Fh      ; color White
     mov rect_height, 1 ; line height
     call DrawRect
 
     ; Mid Body
-    mov bx, ball_y
-    inc bx           ; mid start
-    mov cx, ball_x   ; expand to full 6 width
+    mov bx, 146      
+    mov cx, 158      ; expand to full 6 width
     mov dx, 6        
     mov rect_height, 4 ; inner height
     call DrawRect
 
     ; Bottom Line
-    mov bx, ball_y
-    add bx, 5        ; bottom start
-    mov cx, ball_x
-    inc cx           ; indent 1
+    mov bx, 150      
+    mov cx, 159      ; indent 1
     mov dx, 4        
     mov rect_height, 1 ; line height
     call DrawRect
 
-    ; Draw Bottom HUD
-    mov dh, 22
+    ; Draw Top HUD (Header)
+    mov dh, 1
     mov dl, 2
     mov si, offset hud_score
     mov bl, 0Fh
     call PrintString
 
-    mov dh, 22
+    mov dh, 1
     mov dl, 14
     mov si, offset hud_lives
     mov bl, 0Fh
     call PrintString
 
-    mov dh, 22
+    mov dh, 1
     mov dl, 25
     mov si, offset hud_level
     mov bl, 0Fh
     call PrintString
 
-    mov dh, 23
-    mov dl, 2
-    mov si, offset hud_player
-    mov bl, 0Fh
-    call PrintString
-
-    mov dh, 23
-    mov dl, 10
+    mov dh, 1
+    mov dl, 39
+    sub dl, name_len
     mov si, offset player_name
     mov bl, 0Eh
     call PrintString
 
-    ; --- GAME LOGIC ---
-    ; Move Ball
-    mov ax, ball_dx
-    add ball_x, ax
-    mov ax, ball_dy
-    add ball_y, ax
-
-    ; Bounce Walls Left/Right
-    cmp ball_x, 5
-    jge CheckRight
-    mov ball_dx, 2
-CheckRight:
-    cmp ball_x, 310
-    jle CheckTop
-    mov ball_dx, -2
-
-CheckTop:
-    ; Bounce Top Wall
-    cmp ball_y, 0
-    jge CheckPaddle
-    mov ball_dy, 2
-
-CheckPaddle:
-    ; Bounce Paddle (ball bottom reaches paddle top)
-    cmp ball_y, 149
-    jl CheckBottom
-    mov ax, ball_x
-    add ax, 6    ; ball right edge
-    cmp ax, paddle_x
-    jl CheckBottom ; left of paddle
-    mov cx, paddle_x
-    add cx, 60   ; paddle right edge
-    cmp ball_x, cx
-    jg CheckBottom ; right of paddle
-
-    ; Hit paddle
-    mov ball_dy, -2
-    mov ball_y, 148 ; Prevent getting stuck in paddle
-
-CheckBottom:
-    ; Fall off bottom
-    cmp ball_y, 190
-    jl CheckInput
-    ; Reset position to continue testing
-    mov ball_x, 158
-    mov ball_y, 145
-    mov paddle_x, 130
-
-CheckInput:
-    ; Non-blocking keyboard check
-    mov ah, 01h
-    int 16h
-    jz WaitLoop ; no key pressed
-
-    ; Consume key
+    ; Wait for Enter or Backspace to return to menu
     mov ah, 00h
     int 16h
-
-    cmp al, 27 ; Esc = exit to menu
+    cmp al, 13
     je ReturnMenu
-
-    cmp ah, 4Bh ; Left Arrow
-    jne CheckRightKey
-    cmp paddle_x, 5
-    jle WaitLoop
-    sub paddle_x, 10
-    jmp WaitLoop
-
-CheckRightKey:
-    cmp ah, 4Dh ; Right Arrow
-    jne WaitLoop
-    cmp paddle_x, 255
-    jge WaitLoop
-    add paddle_x, 10
-
-WaitLoop:
-    ; Delay to slow down frame rate (~30 ms limit)
-    mov cx, 00h  ; High word 
-    mov dx, 6000h  ; Low word (adjust for speed)
-    mov ah, 86h
-    int 15h
-
-    ret
-
-ShowGamePROC endp
+    cmp al, 8 ; Backspace
+    je ReturnMenu
+    jmp GameLoop
 
 ExitProgram:
     mov ax, 03h
@@ -819,5 +720,80 @@ DonePrinting:
     pop ax
     ret
 PrintString endp
+
+; ======================================================
+; ADVANCED PROCEDURE: PrintChar_Mode13h
+; AL = Character to print, CX = X, DX = Y, BL = Color
+; ======================================================
+PrintChar_Mode13h proc
+    pusha
+    push es
+
+    ; Save color and character
+    push bx
+    push ax
+
+    ; 1. Get BIOS Font Table Pointer (INT 43h)
+    xor ax, ax
+    mov es, ax
+    mov bp, es:[43h * 4]      ; Offset of font table
+    mov ax, es:[43h * 4 + 2]  ; Segment of font table
+    mov es, ax                ; ES:BP now points to ASCII 0
+
+    ; 2. Find specific character (8 bytes per char)
+    pop ax                    ; Restore AX (AL has char)
+    xor ah, ah
+    shl ax, 3                 ; Multiply ASCII by 8
+    add bp, ax                ; BP points to our character
+
+    ; 3. Setup Video Memory
+    mov ax, 0A000h
+    mov fs, ax                ; Use FS for Video RAM
+
+    pop bx                    ; Restore BX (BL has color)
+
+    mov si, 0                 ; Row counter (0-7)
+RowLoop:
+    mov al, es:[bp + si]      ; Load 1 byte (8 pixels) from font table
+    mov di, 8                 ; Bit counter (8 bits per byte)
+BitLoop:
+    dec di
+    test al, 1                ; Check if the rightmost bit is 1
+    jz SkipPixel
+
+    ; Calculate Pixel Index: (Y + si) * 320 + (X + di)
+    push ax                   ; Save pixel row data
+
+    mov ax, dx                ; ax = Y
+    add ax, si                ; ax = Y + si
+    push dx                   ; Save dx (Y)
+    mov dx, 320
+    mul dx                    ; dx:ax = (Y + si) * 320
+    pop dx                    ; Restore dx (Y)
+
+    add ax, cx                ; ax = (Y + si) * 320 + X
+    add ax, di                ; ax = (Y + si) * 320 + X + di
+
+    push di                   ; Save bit counter
+    mov di, ax                ; DI = pixel index
+
+    mov byte ptr fs:[di], bl  ; Draw pixel with chosen color
+
+    pop di                    ; Restore bit counter
+    pop ax                    ; Restore pixel row data
+
+SkipPixel:
+    shr al, 1                 ; Shift to next bit
+    cmp di, 0
+    jne BitLoop
+
+    inc si
+    cmp si, 8
+    jne RowLoop
+
+    pop es
+    popa
+    ret
+PrintChar_Mode13h endp
 
 end main
