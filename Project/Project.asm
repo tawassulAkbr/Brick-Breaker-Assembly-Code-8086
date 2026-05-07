@@ -20,6 +20,8 @@
     ballColor db 0Fh
     bgColorGame db 0
 
+    bricks db 40 dup(1) ; 5 rows * 8 columns = 40 bricks (1=alive, 0=destroyed)
+
     player_name     db 16 dup(0)
     name_len        db 0
     row_colors      db 0Eh, 0Ch, 0Ah, 0Bh, 0Dh, 09h, 2Ah, 04h
@@ -534,6 +536,14 @@ ShowGame:
     mov ballDY, -1
     mov paddleX, 130
 
+    ; Initialize the bricks array to 1 (alive)
+    mov cx, 40
+    mov di, offset bricks
+InitBricksLoop:
+    mov byte ptr [di], 1
+    inc di
+    loop InitBricksLoop
+
     ; Draw Bricks: 5 rows, 8 columns
     mov si, 0        ; row index
     mov bx, 25       ; starting y position (beneath header)
@@ -731,7 +741,7 @@ CheckMiss:
     mov ah, 86h
     int 15h
     ; Update HUD to reflect lives
-    call UPDATE_HUD
+    call UPDATE_HUD_VALUES
 
 EndWallCheck:
     ret
@@ -763,44 +773,159 @@ CHECK_PADDLE_COLLISION endp
 CHECK_BRICK_COLLISION proc
     mov ax, 0A000h
     mov es, ax
-    ; Let's check top-middle of the ball
-    mov bx, ballY
-    dec bx         ; just above the ball
-    mov cx, ballX
-    add cx, 2
-    mov ax, 320
-    mul bx
-    add ax, cx
-    mov di, ax
-    mov al, es:[di]
-    
-    ; If pixel color is black (0) or white/hud colors, ignore
-    cmp al, 0
-    je SkipBrickCol
-    cmp al, 0Fh
-    je SkipBrickCol
-    cmp al, 0Ch ; paddle
-    je SkipBrickCol
 
-    ; Assume any other color is a brick
-    ; Find brick: erase logic. Since we just check pixels, we erase it visually 
-    ; by finding the brick top-left corner and drawing a black rect.
-    ; A proper grid array would be better but the instructions say:
-    ; "If pixel color = brick color: Reverse dY. Erase brick. Increase score"
-    ; Let's reverse ballDY and increment score
-    mov ballDY, 2
+    ; Calculate the leading edge of the ball to know EXACTLY which brick it hits
+    mov bx, ballY
+    cmp ballDY, 0
+    jl CheckYUp
+    add bx, 3 ; if moving DOWN, leading edge is bottom of ball
+CheckYUp:
+
+    mov cx, ballX
+    cmp ballDX, 0
+    jl CheckXLeft
+    add cx, 3 ; if moving RIGHT, leading edge is right of ball
+CheckXLeft:
+
+    ; Limit bounds so we don't trigger Division Overflow and keep within array!
+    ; 5 rows * 12 height = up to Y=85
+    cmp bx, 25
+    jl SkipBrickCol
+    cmp bx, 84    ; bricks don't exist below Y=84
+    jg SkipBrickCol
+    cmp cx, 25
+    jl SkipBrickCol
+    cmp cx, 304    ; total width 25 + 8*35 = 305
+    jg SkipBrickCol
+
+    ; We are in the bounds of the brick grid
+    ; Row = (Y - 25) / 12
+    mov ax, bx
+    sub ax, 25
+    xor dx, dx
+    push cx
+    mov cx, 12
+    div cx
+    pop cx
+    ; Let's make sure it's not strictly in the gap space (dx >= 8)
+    cmp dx, 8
+    jge SkipBrickCol
+    mov di, ax ; DI = row
+
+    ; Col = (X - 25) / 35
+    mov ax, cx
+    sub ax, 25
+    xor dx, dx
+    push cx
+    mov cx, 35
+    div cx
+    pop cx
+    ; Let's make sure it's not strictly in the gap space (dx >= 32)
+    cmp dx, 32
+    jge SkipBrickCol
+    ; AX = col
+    
+    ; Check if brick is alive: bricks[row * 8 + col]
+    push bx
+    mov bx, di
+    shl bx, 3 ; row * 8
+    add bx, ax
+    mov dl, byte ptr [bricks + bx]
+    cmp dl, 0
+    pop bx
+    je SkipBrickCol ; already destroyed
+
+    ; It's a live brick! Hit it!
+    ; Mark as destroyed
+    push bx
+    push ax ; save col
+    mov bx, di
+    shl bx, 3 ; row * 8
+    add bx, ax
+    mov byte ptr [bricks + bx], 0
+    pop ax
+    pop bx
+
+    ; Reverse ballDY properly avoiding edge case
+    push ax
+    mov ax, ballDY
+    neg ax
+    mov ballDY, ax
+    pop ax
+
     add score, 100
-    call UPDATE_HUD
-    ; Realistically erasing it perfectly without a brick array is hard,
-    ; but we can just color over an 32x8 rect roughly where cx/bx is.
-    ; bx is Y, cx is X.
-    ; Grid starts X=25, gap=3, W=32. Y=25, gap=4, H=8.
-    ; Integer division to find column & row.
-    ; This fulfills the spec for Iteration 2 efficiently.
+    call UPDATE_HUD_VALUES
+
+    ; Erase the brick visual
+    ; Find base X and Y again for DrawRect inside the exact slot
+    ; base Y = row * 12 + 25
+    push ax ; Save COL
+    mov ax, di
+    push cx
+    mov cx, 12
+    mul cx
+    pop cx
+    add ax, 25
+    push ax ; base Y
+
+    ; base X = col * 35 + 25
+    pop bx ; BX = base Y (oops wait, need to calculate X first without losing Y)
+    push bx
+    
+    ; Wait, we saved col in memory above `push ax`. Let's restore it.
+    pop bx ; base Y (discarded temporarily)
+    pop ax ; restore COL
+    
+    push cx
+    mov cx, 35
+    mul cx
+    pop cx
+    add ax, 25
+    mov cx, ax ; CX = base X
+
+    ; Now restore base Y perfectly
+    mov ax, di
+    push cx
+    mov cx, 12
+    mul cx
+    pop cx
+    add ax, 25
+    mov bx, ax ; BX = base Y
+
+    mov dx, 32 ; brick width
+    mov rect_height, 8
+    mov al, bgColorGame ; Erase visually using background color
+    call DrawRect
 
 SkipBrickCol:
     ret
 CHECK_BRICK_COLLISION endp
+
+UPDATE_HUD_VALUES proc
+    ; Updates the underlying ascii string parameters for score and lives
+    ; 1. Process Score into hud_score ('Score: 0000')
+    mov ax, score
+    mov bx, 10
+    mov cx, 4
+    mov di, offset hud_score + 10 ; Point to last digit of '0000'
+ScoreLoop:
+    xor dx, dx
+    div bx
+    add dl, '0'
+    mov [di], dl
+    dec di
+    loop ScoreLoop
+
+    ; 2. Process Lives into hud_lives ('Lives: 3')
+    mov al, lives
+    add al, '0'
+    mov di, offset hud_lives + 7
+    mov [di], al
+
+    ; Redraw HUD
+    call UPDATE_HUD
+    ret
+UPDATE_HUD_VALUES endp
 
 UPDATE_HUD proc
     mov dh, 1
@@ -819,6 +944,14 @@ UPDATE_HUD proc
     mov dl, 25
     mov si, offset hud_level
     mov bl, 0Fh
+    call PrintString
+
+    ; Draw player name
+    mov dh, 1
+    mov dl, 39
+    sub dl, name_len
+    mov si, offset player_name
+    mov bl, 0Eh
     call PrintString
     ret
 UPDATE_HUD endp
