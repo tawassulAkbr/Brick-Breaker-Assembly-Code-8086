@@ -720,8 +720,8 @@ CheckRightWall:
     jl WallYCheck
     mov ballDX, -2
 WallYCheck:
-    ; ballY <= 15
-    cmp ballY, 15
+    ; ballY <= 23 (prevent touching the header)
+    cmp ballY, 23
     jg CheckMiss
     mov ballDY, 2
     jmp EndWallCheck
@@ -901,7 +901,31 @@ SkipBrickCol:
     ret
 CHECK_BRICK_COLLISION endp
 
+; ======================================================
+; Custom Raster Font Iterator strictly for rapid HUD drawing
+; Completely skips standard BIOS INT 10h to prevent ghosting
+; Inputs: DX = Y(px), CX = X(px), SI = String Offset, BL = Color
+; ======================================================
+PrintStringHUD proc
+    push ax
+    push cx
+    push si
+NextCharHUD:
+    lodsb
+    cmp al, 0
+    je DonePrintingHUD
+    call PrintChar_Mode13h
+    add cx, 8
+    jmp NextCharHUD
+DonePrintingHUD:
+    pop si
+    pop cx
+    pop ax
+    ret
+PrintStringHUD endp
+
 UPDATE_HUD_VALUES proc
+    pusha
     ; Updates the underlying ascii string parameters for score and lives
     ; 1. Process Score into hud_score ('Score: 0000')
     mov ax, score
@@ -924,35 +948,54 @@ ScoreLoop:
 
     ; Redraw HUD
     call UPDATE_HUD
+    popa
     ret
 UPDATE_HUD_VALUES endp
 
 UPDATE_HUD proc
-    mov dh, 1
-    mov dl, 2
+    pusha
+
+    ; Erase previous text safely to prevent number overlapping
+    mov bx, 8            ; Y = 8
+    mov cx, 0            ; Start at X=0
+    mov dx, 320          ; Clear entire screen width
+    mov al, bgColorGame  ; Erase with Background color
+    mov rect_height, 8   ; Block 8 pixels tall
+    call DrawRect
+
+    ; Now use custom pixel renderer for HUD to completely bypass standard BIOS Text bugs
+    mov dx, 8      ; Y = 8
+    mov cx, 16     ; X = Col 2 * 8
     mov si, offset hud_score
     mov bl, 0Fh
-    call PrintString
+    call PrintStringHUD
 
-    mov dh, 1
-    mov dl, 14
+    mov dx, 8
+    mov cx, 112    ; X = Col 14 * 8
     mov si, offset hud_lives
     mov bl, 0Fh
-    call PrintString
+    call PrintStringHUD
 
-    mov dh, 1
-    mov dl, 25
+    mov dx, 8
+    mov cx, 200    ; X = Col 25 * 8
     mov si, offset hud_level
     mov bl, 0Fh
-    call PrintString
+    call PrintStringHUD
 
-    ; Draw player name
-    mov dh, 1
-    mov dl, 39
-    sub dl, name_len
+    ; Draw player name natively preventing any edge duplication wrapping
+    mov al, name_len
+    cmp al, 0
+    je SkipNamePrint
+    mov cx, 312    ; Base Col 39 * 8 (Max Edge)
+    xor ah, ah
+    shl ax, 3      ; Multiply length by 8 for pixel offset
+    sub cx, ax     ; Shift left
+    mov dx, 8      ; Y = 8
     mov si, offset player_name
     mov bl, 0Eh
-    call PrintString
+    call PrintStringHUD
+SkipNamePrint:
+    popa
     ret
 UPDATE_HUD endp
 
@@ -1041,17 +1084,24 @@ PrintString proc
     push si
     
 NextChar:
-    mov ah, 02h
-    mov bh, 0
-    int 10h
-
     lodsb
     cmp al, 0
     je DonePrinting
 
-    mov ah, 09h
-    mov cx, 1
+    ; Set cursor ONLY for valid character to prevent terminal overflow wrapping
+    push ax
+    mov ah, 02h
+    mov bh, 0
     int 10h
+    pop ax
+
+    ; Print the character protecting AL char
+    push ax
+    mov ah, 09h
+    mov bh, 0    ; Page 0
+    mov cx, 1    ; Print 1 time
+    int 10h
+    pop ax
 
     inc dl
     jmp NextChar
