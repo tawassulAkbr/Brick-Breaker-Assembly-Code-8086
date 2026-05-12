@@ -2,59 +2,56 @@
 .386
 .stack 100h
 
-.data
-    current_screen  db 0 ; 0=Home, 1=Name, 2=Menu, 3=Instructions, 4=Scores, 5=Game
-    menu_selected   db 0 ; 0=Start, 1=Inst, 2=Score, 3=Exit
-    bg_color        db 6 ; Default brown background
-    
-    ; Day 1 Iteration 2 requirements
-    ballX dw 160
-    ballY dw 100
-    ballDX dw 1
-    ballDY dw -1
-    paddleX dw 130
-    paddleY dw 155
-    paddleWidth dw 60
-    lives db 3
-    score dw 0
-    ballColor db 0Fh
-    bgColorGame db 0
+BRICK_ROWS      equ 6
+BRICK_COLS      equ 12
+BRICK_COUNT     equ 72
+BRICK_START_X   equ 16
+BRICK_START_Y   equ 30
+BRICK_W         equ 21
+BRICK_H         equ 6
+BRICK_STEP_X    equ 24
+BRICK_STEP_Y    equ 9
 
-    bricks db 40 dup(1) ; 5 rows * 8 columns = 40 bricks (1=alive, 0=destroyed)
+.data
+    current_screen  db 0 ; 0=Home, 1=Name, 2=Menu, 3=Instructions, 4=Scores, 5=Game, 6=GameOver
+    last_screen     db 255
+    screen_redraw   db 1
+    menu_selected   db 0 ; 0=Start, 1=Inst, 2=Score, 3=Exit
+    bg_color        db 0 ; Dark background
 
     player_name     db 16 dup(0)
     name_len        db 0
-    row_colors      db 0Eh, 0Ch, 0Ah, 0Bh, 0Dh, 09h, 2Ah, 04h
+    row_colors      db 0Ch, 0Eh, 0Ah, 0Bh, 0Dh, 09h
     rect_height     dw 10
 
     wide_box_top    db '+-------------------------------+', 0
     wide_box_empty  db '|                               |', 0
     wide_box_bot    db '+-------------------------------+', 0
 
-    title_box_top   db '+-----------------------+', 0
-    title_msg       db '|     BRICK BREAKER     |', 0
-    title_box_bot   db '+-----------------------+', 0
-    instruction_msg db 'PRESS ANY KEY TO START', 0
+    title_box_top   db '+-----------------------------+', 0
+    title_msg       db '|        BRICK BREAKER        |', 0
+    title_box_bot   db '+-----------------------------+', 0
+    instruction_msg db 'PRESS ANY KEY', 0
 
-    prompt_top      db '+-----------------------+', 0
-    prompt_msg      db '| Enter Player Name:    |', 0
-    prompt_mid      db '|                       |', 0
-    prompt_bot      db '+-----------------------+', 0
+    prompt_top      db '+-----------------------------+', 0
+    prompt_msg      db '|      Enter Player Name      |', 0
+    prompt_mid      db '|                             |', 0
+    prompt_bot      db '+-----------------------------+', 0
     
     menu_start      db '  Start Game      ', 0
     menu_inst       db '  Instructions    ', 0
     menu_score      db '  High Scores     ', 0
     menu_exit       db '  Exit            ', 0
 
-    menu_box_top    db '+------------------+', 0
-    menu_box_empty  db '|                  |', 0
-    menu_box_bot    db '+------------------+', 0
+    menu_box_top    db '+------------------------+', 0
+    menu_box_empty  db '|                        |', 0
+    menu_box_bot    db '+------------------------+', 0
 
     instr_title     db 'INSTRUCTIONS', 0
-    instr_1         db 'Use Left/Right to move', 0
+    instr_1         db 'Use A/D or Left/Right', 0
     instr_2         db 'Bounce ball to break bricks', 0
     instr_3         db 'Do not let the ball fall!', 0
-    instr_4         db 'Collect bonuses for extra power', 0
+    instr_4         db 'Clear all bricks to win', 0
     instr_ret       db 'Press Enter/Backspace', 0
 
     score_title     db 'HIGH SCORES', 0
@@ -66,6 +63,32 @@
     hud_lives       db 'Lives: 3', 0
     hud_level       db 'Level: 1', 0
 
+    game_over_title db 'GAME OVER', 0
+    level_done_msg  db 'LEVEL COMPLETE', 0
+    game_over_ret   db 'Press Enter/Backspace', 0
+
+    paddle_x        dw 130
+    paddle_y        dw 184
+    prev_paddle_x   dw 130
+    prev_paddle_y   dw 184
+    ball_x          dw 160
+    ball_y          dw 174
+    prev_ball_x     dw 160
+    prev_ball_y     dw 174
+    ball_dx         dw 2
+    ball_dy         dw -2
+    score           dw 0
+    lives           db 3
+    bricks_left     db BRICK_COUNT
+    game_result     db 0 ; 0=lost, 1=level complete
+    bricks          db BRICK_COUNT dup(1)
+    draw_index      dw 0
+    draw_row        db 0
+    draw_color      db 0
+    scan_row        db 0
+    game_first_draw db 1
+    hud_dirty       db 1
+
 .code
 main proc
     mov ax, @data
@@ -76,8 +99,19 @@ main proc
     int 10h
 
 GameLoop:
+    mov al, current_screen
+    cmp al, last_screen
+    je SkipScreenClear
     call ClearScreen
+    mov al, current_screen
+    mov last_screen, al
+    mov screen_redraw, 1
+    jmp ScreenDispatch
 
+SkipScreenClear:
+    mov screen_redraw, 0
+
+ScreenDispatch:
     cmp current_screen, 0
     je ShowHome
     cmp current_screen, 1
@@ -90,32 +124,35 @@ GameLoop:
     je ShowScores
     cmp current_screen, 5
     je ShowGame
+    cmp current_screen, 6
+    je ShowGameOver
 
 ShowHome:
+    call MaybeDrawUiBackdrop
     ; Top of the box
     mov dh, 7
-    mov dl, 8
+    mov dl, 5
     mov si, offset title_box_top
     mov bl, 0Fh ; White
     call PrintString
 
     ; The title itself
     mov dh, 8
-    mov dl, 8
+    mov dl, 5
     mov si, offset title_msg
     mov bl, 0Bh ; Light Cyan for Title
     call PrintString
 
     ; Bottom of the box
     mov dh, 9
-    mov dl, 8
+    mov dl, 5
     mov si, offset title_box_bot
     mov bl, 0Fh ; White
     call PrintString
 
     ; Footer instruction
     mov dh, 23
-    mov dl, 9
+    mov dl, 14
     mov si, offset instruction_msg
     mov bl, 0Eh ; Yellow
     call PrintString
@@ -126,26 +163,27 @@ ShowHome:
     jmp GameLoop
 
 ShowNameInput:
+    call MaybeDrawUiBackdrop
     mov dh, 9
-    mov dl, 8
+    mov dl, 5
     mov si, offset prompt_top
     mov bl, 0Fh
     call PrintString
 
     mov dh, 10
-    mov dl, 8
+    mov dl, 5
     mov si, offset prompt_msg
     mov bl, 0Ah ; Light Green
     call PrintString
 
     mov dh, 11
-    mov dl, 8
+    mov dl, 5
     mov si, offset prompt_mid
     mov bl, 0Ah
     call PrintString
 
     mov dh, 12
-    mov dl, 8
+    mov dl, 5
     mov si, offset prompt_bot
     mov bl, 0Fh
     call PrintString
@@ -154,14 +192,14 @@ ShowNameInput:
 NameInputLoop:
     ; Erase previous name segment (reprint empty mid)
     mov dh, 11
-    mov dl, 8
+    mov dl, 5
     mov si, offset prompt_mid
     mov bl, 0Ah
     call PrintString
 
     ; Print typed name
     mov dh, 11
-    mov dl, 12
+    mov dl, 13
     mov si, offset player_name
     mov bl, 0Fh ; White for typed text
     call PrintString
@@ -181,25 +219,25 @@ NameInputLoop:
     mov player_name[bx], al
     inc name_len
     mov player_name[bx+1], 0
+    jmp NameInputLoop
 
-    call ClearScreen
     mov dh, 9
-    mov dl, 8
+    mov dl, 5
     mov si, offset prompt_top
     mov bl, 0Fh
     call PrintString
     mov dh, 10
-    mov dl, 8
+    mov dl, 5
     mov si, offset prompt_msg
     mov bl, 0Ah
     call PrintString
     mov dh, 11
-    mov dl, 8
+    mov dl, 5
     mov si, offset prompt_mid
     mov bl, 0Ah
     call PrintString
     mov dh, 12
-    mov dl, 8
+    mov dl, 5
     mov si, offset prompt_bot
     mov bl, 0Fh
     call PrintString
@@ -212,25 +250,25 @@ NameInputBS:
     xor bx, bx
     mov bl, name_len
     mov player_name[bx], 0
+    jmp NameInputLoop
 
-    call ClearScreen
     mov dh, 9
-    mov dl, 8
+    mov dl, 5
     mov si, offset prompt_top
     mov bl, 0Fh
     call PrintString
     mov dh, 10
-    mov dl, 8
+    mov dl, 5
     mov si, offset prompt_msg
     mov bl, 0Ah
     call PrintString
     mov dh, 11
-    mov dl, 8
+    mov dl, 5
     mov si, offset prompt_mid
     mov bl, 0Ah
     call PrintString
     mov dh, 12
-    mov dl, 8
+    mov dl, 5
     mov si, offset prompt_bot
     mov bl, 0Fh
     call PrintString
@@ -241,69 +279,70 @@ NameInputDone:
     jmp GameLoop
 
 ShowMenu:
+    call MaybeDrawUiBackdrop
     ; Draw Box
     mov dh, 6
-    mov dl, 10
+    mov dl, 7
     mov si, offset menu_box_top
     mov bl, 0Fh
     call PrintString
 
     mov dh, 7
-    mov dl, 10
+    mov dl, 7
     mov si, offset menu_box_empty
     mov bl, 0Fh
     call PrintString
 
     mov dh, 8
-    mov dl, 10
+    mov dl, 7
     mov si, offset menu_box_empty
     mov bl, 0Fh
     call PrintString
 
     mov dh, 9
-    mov dl, 10
+    mov dl, 7
     mov si, offset menu_box_empty
     mov bl, 0Fh
     call PrintString
 
     mov dh, 10
-    mov dl, 10
+    mov dl, 7
     mov si, offset menu_box_empty
     mov bl, 0Fh
     call PrintString
 
     mov dh, 11
-    mov dl, 10
+    mov dl, 7
     mov si, offset menu_box_empty
     mov bl, 0Fh
     call PrintString
 
     mov dh, 12
-    mov dl, 10
+    mov dl, 7
     mov si, offset menu_box_empty
     mov bl, 0Fh
     call PrintString
 
     mov dh, 13
-    mov dl, 10
+    mov dl, 7
     mov si, offset menu_box_empty
     mov bl, 0Fh
     call PrintString
 
     mov dh, 14
-    mov dl, 10
+    mov dl, 7
     mov si, offset menu_box_empty
     mov bl, 0Fh
     call PrintString
 
     mov dh, 15
-    mov dl, 10
+    mov dl, 7
     mov si, offset menu_box_bot
     mov bl, 0Fh
     call PrintString
 
     mov dh, 8
-    mov dl, 11
+    mov dl, 12
     mov si, offset menu_start
     mov bl, 0Fh
     cmp menu_selected, 0
@@ -312,7 +351,7 @@ ShowMenu:
 M1: call PrintString
 
     mov dh, 10
-    mov dl, 11
+    mov dl, 12
     mov si, offset menu_inst
     mov bl, 0Fh
     cmp menu_selected, 1
@@ -321,7 +360,7 @@ M1: call PrintString
 M2: call PrintString
 
     mov dh, 12
-    mov dl, 11
+    mov dl, 12
     mov si, offset menu_score
     mov bl, 0Fh
     cmp menu_selected, 2
@@ -330,7 +369,7 @@ M2: call PrintString
 M3: call PrintString
 
     mov dh, 14
-    mov dl, 11
+    mov dl, 12
     mov si, offset menu_exit
     mov bl, 0Fh
     cmp menu_selected, 3
@@ -355,7 +394,7 @@ GoNameInput:
     mov byte ptr player_name, 0
 
     mov current_screen, 1
-    mov bg_color, 6
+    mov bg_color, 0
     jmp GameLoop
 
 MenuUp:
@@ -378,21 +417,23 @@ MenuSelect:
     cmp menu_selected, 3
     je ExitGame
 StartGame:
+    call InitGame
     mov bg_color, 0 ; 0 = Black background!
     mov current_screen, 5
     jmp GameLoop
 GoInstr:
-    mov bg_color, 12 ; Light Red 0Ch
+    mov bg_color, 0
     mov current_screen, 3
     jmp GameLoop
 GoScore:
-    mov bg_color, 2 ; Green 02h
+    mov bg_color, 0
     mov current_screen, 4
     jmp GameLoop
 ExitGame:
     jmp ExitProgram
 
 ShowInstr:
+    call MaybeDrawUiBackdrop
     mov dh, 4
     mov dl, 3
     mov si, offset wide_box_top
@@ -423,7 +464,7 @@ InstrBox:
     call PrintString
 
     mov dh, 8
-    mov dl, 6
+    mov dl, 8
     mov si, offset instr_1
     mov bl, 0Fh ; White
     call PrintString
@@ -435,19 +476,19 @@ InstrBox:
     call PrintString
 
     mov dh, 12
-    mov dl, 6
+    mov dl, 7
     mov si, offset instr_3
     mov bl, 0Ch ; Light Red
     call PrintString
 
     mov dh, 14
-    mov dl, 5
+    mov dl, 8
     mov si, offset instr_4
     mov bl, 0Eh
     call PrintString
 
     mov dh, 16
-    mov dl, 9
+    mov dl, 10
     mov si, offset instr_ret
     mov bl, 08h
     call PrintString
@@ -461,6 +502,7 @@ InstrBox:
     jmp GameLoop
 
 ShowScores:
+    call MaybeDrawUiBackdrop
     mov dh, 4
     mov dl, 3
     mov si, offset wide_box_top
@@ -491,25 +533,25 @@ ScoreBox:
     call PrintString
 
     mov dh, 8
-    mov dl, 6
+    mov dl, 7
     mov si, offset score_1
     mov bl, 0Eh ; Yellow for 1st
     call PrintString
 
     mov dh, 10
-    mov dl, 6
+    mov dl, 7
     mov si, offset score_2
     mov bl, 07h ; Light Gray for 2nd
     call PrintString
 
     mov dh, 12
-    mov dl, 6
+    mov dl, 7
     mov si, offset score_3
     mov bl, 06h ; Brown/Orange for 3rd
     call PrintString
 
     mov dh, 14
-    mov dl, 9
+    mov dl, 10
     mov si, offset instr_ret
     mov bl, 08h ; Dark Gray
     call PrintString
@@ -523,96 +565,68 @@ ScoreBox:
     jmp GameLoop
 
 ReturnMenu:
-    mov bg_color, 6
+    mov bg_color, 0
     mov current_screen, 2
     jmp GameLoop
 
 ShowGame:
-    mov lives, 3
-    mov score, 0
-    mov ballX, 160
-    mov ballY, 140
-    mov ballDX, 1
-    mov ballDY, -1
-    mov paddleX, 130
+    call HandleGameInput
+    cmp current_screen, 5
+    jne GameLoop
+    call UpdateBall
+    cmp current_screen, 5
+    jne GameLoop
+    call UpdateHud
+    call DrawGameFrame
+    call DelayFrame
+    jmp GameLoop
 
-    ; Initialize the bricks array to 1 (alive)
-    mov cx, 40
-    mov di, offset bricks
-InitBricksLoop:
-    mov byte ptr [di], 1
-    inc di
-    loop InitBricksLoop
+ShowGameOver:
+    call MaybeDrawUiBackdrop
+    mov dh, 7
+    mov dl, 5
+    mov si, offset title_box_top
+    mov bl, 0Fh
+    call PrintString
 
-    ; Draw Bricks: 5 rows, 8 columns
-    mov si, 0        ; row index
-    mov bx, 25       ; starting y position (beneath header)
+    mov dh, 8
+    mov dl, 15
+    mov si, offset game_over_title
+    cmp game_result, 0
+    je GameOverTitleReady
+    mov dl, 12
+    mov si, offset level_done_msg
+GameOverTitleReady:
+    mov bl, 0Ch
+    call PrintString
 
-DrawRowLoop:
-    mov cx, 25       ; starting x position resets for every row
-    push si
-    mov di, 8        ; 8 bricks per row
-    mov al, row_colors[si] ; load different color for each row
+    mov dh, 9
+    mov dl, 5
+    mov si, offset title_box_bot
+    mov bl, 0Fh
+    call PrintString
 
-DrawColLoop:
-    push bx          ; PROTECT BX
-    push cx          ; PROTECT CX
-    push ax          ; PROTECT AX
-    mov rect_height, 8 ; brick height
-    mov dx, 32       ; width of 32 pixels
-    call DrawRect
-    pop ax           ; restore AX
-    pop cx           ; restore CX
-    pop bx           ; restore BX
+    call UpdateHud
+    mov dh, 12
+    mov dl, 14
+    mov si, offset hud_score
+    mov bl, 0Eh
+    call PrintString
 
-    add cx, 35       ; next x = 32 width + 3 gap
-    dec di
-    jnz DrawColLoop
+    mov dh, 14
+    mov dl, 7
+    mov si, offset game_over_ret
+    mov bl, 08h
+    call PrintString
 
-    add bx, 12       ; next y
-    pop si
-    inc si
-    cmp si, 5        ; limit to exactly 5 rows
-    jl DrawRowLoop
-
-    ; Draw Top HUD (Header)
-    call UPDATE_HUD
-
-PlayGameLoop:
-    call READ_INPUT
-    call MOVE_PADDLE
-
-    ; Erase Ball
-    mov al, bgColorGame
-    call DRAW_BALL_AT
-
-    call MOVE_BALL
-
-    call CHECK_WALL_COLLISION
-    call CHECK_PADDLE_COLLISION
-    call CHECK_BRICK_COLLISION
-
-    ; Draw Ball
-    mov al, ballColor
-    call DRAW_BALL_AT
-
-    ; Frame Delay
-    mov cx, 0000h
-    mov dx, 0A000h ; roughly 40ms
-    mov ah, 86h
-    int 15h
-
-    ; End condition
-    cmp lives, 0
-    jle GameOver
-
-    ; Quit to menu if user pressed ESC (optional, let's say Esc=1)
-    ; But we don't need it per spec yet unless specified, but let's check input
-    jmp PlayGameLoop
-
-GameOver:
-    ; Game Over transition
-    mov current_screen, 2
+    mov ah, 00h
+    int 16h
+    cmp al, 13
+    je ReturnMenu
+    cmp al, 8 ; Backspace
+    je ReturnMenu
+    cmp al, 27 ; Escape
+    je ReturnMenu
     jmp GameLoop
 
 ExitProgram:
@@ -623,385 +637,760 @@ ExitProgram:
 main endp
 
 ; ======================================================
-; MODULAR PROCEDURES FOR ITERATION 2
+; UI PROCEDURE: MaybeDrawUiBackdrop
+; Draws shared UI chrome only when entering a screen.
 ; ======================================================
+MaybeDrawUiBackdrop proc
+    cmp screen_redraw, 1
+    jne MaybeBackdropDone
+    call DrawUiBackdrop
+MaybeBackdropDone:
+    ret
+MaybeDrawUiBackdrop endp
 
-READ_INPUT proc
+; ======================================================
+; UI PROCEDURE: DrawUiBackdrop
+; Dark shared backdrop for menu, name, score, and message screens.
+; ======================================================
+DrawUiBackdrop proc
+    push ax
+    push bx
+    push cx
+    push dx
+
+    mov bx, 0
+    mov cx, 0
+    mov dx, 320
+    mov al, 01h
+    mov rect_height, 18
+    call DrawRect
+
+    mov bx, 182
+    mov cx, 0
+    mov dx, 320
+    mov al, 01h
+    mov rect_height, 18
+    call DrawRect
+
+    mov bx, 20
+    mov cx, 18
+    mov dx, 284
+    mov al, 08h
+    mov rect_height, 2
+    call DrawRect
+
+    mov bx, 180
+    mov cx, 18
+    mov dx, 284
+    mov al, 08h
+    mov rect_height, 2
+    call DrawRect
+
+    mov bx, 20
+    mov cx, 18
+    mov dx, 2
+    mov al, 08h
+    mov rect_height, 160
+    call DrawRect
+
+    mov bx, 20
+    mov cx, 300
+    mov dx, 2
+    mov al, 08h
+    mov rect_height, 160
+    call DrawRect
+
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+DrawUiBackdrop endp
+
+; ======================================================
+; GAME PROCEDURE: InitGame
+; Resets Level 1 state before gameplay starts.
+; ======================================================
+InitGame proc
+    push ax
+    push cx
+    push di
+
+    mov score, 0
+    mov lives, 3
+    mov bricks_left, BRICK_COUNT
+    mov game_result, 0
+    mov game_first_draw, 1
+    mov hud_dirty, 1
+    call ResetBall
+
+    mov di, offset bricks
+    mov cx, BRICK_COUNT
+    mov al, 1
+InitBricksLoop:
+    mov [di], al
+    inc di
+    loop InitBricksLoop
+
+    call UpdateHud
+
+    pop di
+    pop cx
+    pop ax
+    ret
+InitGame endp
+
+; ======================================================
+; GAME PROCEDURE: ResetBall
+; Restores paddle and ball after start or life loss.
+; ======================================================
+ResetBall proc
+    mov paddle_x, 130
+    mov paddle_y, 184
+    mov prev_paddle_x, 130
+    mov prev_paddle_y, 184
+    mov ball_x, 160
+    mov ball_y, 174
+    mov prev_ball_x, 160
+    mov prev_ball_y, 174
+    mov ball_dx, 2
+    mov ball_dy, -2
+    ret
+ResetBall endp
+
+; ======================================================
+; GAME PROCEDURE: HandleGameInput
+; Non-blocking paddle input for arrows, A/D, and exit keys.
+; ======================================================
+HandleGameInput proc
+    push ax
+
     mov ah, 01h
     int 16h
-    jz NoInput
+    jz NoGameKey
+
     mov ah, 00h
     int 16h
-NoInput:
-    ret
-READ_INPUT endp
 
-MOVE_PADDLE proc
-    ; Erase paddle at old pos
-    mov bx, paddleY
-    mov cx, paddleX
-    mov dx, paddleWidth
-    mov al, bgColorGame
-    mov rect_height, 8
-    call DrawRect
+    cmp al, 27 ; Escape
+    je GameInputReturnMenu
+    cmp al, 8 ; Backspace
+    je GameInputReturnMenu
 
-    ; Check input in AL/AH (from previous READ_INPUT if not overwritten, but actually we should read directly or use last key)
-    ; But INT 16h AH=01 returns ZF=0 if key. If we consume with AH=00h, it is in AL/AH.
-    ; Realistically, it's safer to read inside MOVE_PADDLE or just check keyboard buffer again.
-    ; The plan says: "Step 1: Read Input ... If key exists, read it... Step 2: Update Paddle"
     cmp ah, 4Bh ; Left arrow
-    jne CheckRight
-    mov ax, paddleX
-    cmp ax, 0
-    jle EndPaddleMove
-    sub ax, 10
-    cmp ax, 0
-    jge StorePaddleX
-    mov ax, 0
-    jmp StorePaddleX
+    je MovePaddleLeft
+    cmp al, 'a'
+    je MovePaddleLeft
+    cmp al, 'A'
+    je MovePaddleLeft
 
-CheckRight:
     cmp ah, 4Dh ; Right arrow
-    jne EndPaddleMove
-    mov ax, paddleX
-    mov cx, 320
-    sub cx, paddleWidth
-    cmp ax, cx
-    jge EndPaddleMove
-    add ax, 10
-    cmp ax, cx
-    jle StorePaddleX
-    mov ax, cx
+    je MovePaddleRight
+    cmp al, 'd'
+    je MovePaddleRight
+    cmp al, 'D'
+    je MovePaddleRight
+    jmp NoGameKey
 
-StorePaddleX:
-    mov paddleX, ax
+MovePaddleLeft:
+    mov ax, paddle_x
+    cmp ax, 12
+    jb SetPaddleLeftEdge
+    sub ax, 8
+    mov paddle_x, ax
+    jmp NoGameKey
 
-EndPaddleMove:
-    ; Draw paddle
-    mov bx, paddleY
-    mov cx, paddleX
-    mov dx, paddleWidth
-    mov al, 0Ch      ; Light Red
-    mov rect_height, 8
-    call DrawRect
-    ret
-MOVE_PADDLE endp
+SetPaddleLeftEdge:
+    mov paddle_x, 4
+    jmp NoGameKey
 
-DRAW_BALL_AT proc
-    ; Assumes AL = color
-    ; Draws a 4x4 ball at ballX, ballY
-    push ax
-    mov bx, ballY
-    mov cx, ballX
-    mov dx, 4
-    mov rect_height, 4
-    call DrawRect
+MovePaddleRight:
+    mov ax, paddle_x
+    cmp ax, 248
+    jae SetPaddleRightEdge
+    add ax, 8
+    mov paddle_x, ax
+    jmp NoGameKey
+
+SetPaddleRightEdge:
+    mov paddle_x, 256
+    jmp NoGameKey
+
+GameInputReturnMenu:
+    mov bg_color, 0
+    mov current_screen, 2
+
+NoGameKey:
     pop ax
     ret
-DRAW_BALL_AT endp
+HandleGameInput endp
 
-MOVE_BALL proc
-    mov ax, ballDX
-    add ballX, ax
-    mov ax, ballDY
-    add ballY, ax
+; ======================================================
+; GAME PROCEDURE: UpdateBall
+; Moves the ball and checks wall, paddle, and brick collisions.
+; ======================================================
+UpdateBall proc
+    push ax
+    push dx
+
+    mov ax, ball_x
+    add ax, ball_dx
+    mov ball_x, ax
+
+    mov ax, ball_y
+    add ax, ball_dy
+    mov ball_y, ax
+
+    mov ax, ball_x
+    cmp ax, 3
+    jge BallCheckRightWall
+    mov ball_x, 3
+    mov ball_dx, 2
+
+BallCheckRightWall:
+    mov ax, ball_x
+    cmp ax, 311
+    jle BallCheckTopWall
+    mov ball_x, 311
+    mov ball_dx, -2
+
+BallCheckTopWall:
+    mov ax, ball_y
+    cmp ax, 20
+    jge BallCheckBottom
+    mov ball_y, 20
+    mov ball_dy, 2
+
+BallCheckBottom:
+    mov ax, ball_y
+    cmp ax, 191
+    jle BallCheckPaddle
+    call LoseLife
+    jmp UpdateBallDone
+
+BallCheckPaddle:
+    mov ax, ball_dy
+    cmp ax, 0
+    jl BallCheckBricks
+
+    mov ax, ball_y
+    add ax, 6
+    cmp ax, paddle_y
+    jl BallCheckBricks
+
+    mov ax, paddle_y
+    add ax, 6
+    mov dx, ball_y
+    cmp dx, ax
+    jg BallCheckBricks
+
+    mov ax, ball_x
+    add ax, 6
+    cmp ax, paddle_x
+    jl BallCheckBricks
+
+    mov ax, paddle_x
+    add ax, 60
+    mov dx, ball_x
+    cmp dx, ax
+    jg BallCheckBricks
+
+    mov ax, paddle_y
+    sub ax, 6
+    mov ball_y, ax
+    mov ball_dy, -2
+
+    mov ax, ball_x
+    add ax, 3
+    mov dx, paddle_x
+    add dx, 30
+    cmp ax, dx
+    jl PaddleHitLeftSide
+
+    mov ball_dx, 2
+    mov dx, paddle_x
+    add dx, 48
+    cmp ax, dx
+    jl UpdateBallDone
+    mov ball_dx, 3
+    jmp UpdateBallDone
+
+PaddleHitLeftSide:
+    mov ball_dx, -2
+    mov dx, paddle_x
+    add dx, 12
+    cmp ax, dx
+    jg UpdateBallDone
+    mov ball_dx, -3
+    jmp UpdateBallDone
+
+BallCheckBricks:
+    call CheckBrickCollision
+
+UpdateBallDone:
+    pop dx
+    pop ax
     ret
-MOVE_BALL endp
+UpdateBall endp
 
-CHECK_WALL_COLLISION proc
-    ; ballX <= 0
-    cmp ballX, 0
-    jg CheckRightWall
-    mov ballDX, 2
-    jmp WallYCheck
-CheckRightWall:
-    ; ballX >= 315 (319 - ballWidth)
-    cmp ballX, 315
-    jl WallYCheck
-    mov ballDX, -2
-WallYCheck:
-    ; ballY <= 23 (prevent touching the header)
-    cmp ballY, 23
-    jg CheckMiss
-    mov ballDY, 2
-    jmp EndWallCheck
-CheckMiss:
-    ; ballY > 195 (missed)
-    cmp ballY, 195
-    jl EndWallCheck
+; ======================================================
+; GAME PROCEDURE: LoseLife
+; Reduces lives, resets ball, or switches to game over.
+; ======================================================
+LoseLife proc
+    cmp lives, 0
+    je LoseLifeDone
+
     dec lives
-    ; Reset ball
-    mov ballX, 160
-    mov ballY, 140
-    mov ballDX, 1
-    mov ballDY, -1
-    ; Pause briefly
-    mov cx, 0005h
-    mov dx, 0000h
-    mov ah, 86h
-    int 15h
-    ; Update HUD to reflect lives
-    call UPDATE_HUD_VALUES
+    mov hud_dirty, 1
+    cmp lives, 0
+    je NoLivesLeft
 
-EndWallCheck:
+    mov game_first_draw, 1
+    call ResetBall
+    jmp LoseLifeDone
+
+NoLivesLeft:
+    mov game_result, 0
+    mov current_screen, 6
+    mov bg_color, 0
+
+LoseLifeDone:
     ret
-CHECK_WALL_COLLISION endp
-
-CHECK_PADDLE_COLLISION proc
-    ; Pixel check - simple method: read A000h at ball position + some offset
-    mov ax, 0A000h
-    mov es, ax
-    ; Let's check bottom-middle of the ball
-    mov bx, ballY
-    add bx, 4      ; just below the ball
-    mov cx, ballX
-    add cx, 2      ; middle of ball width
-    ; calc di = bx * 320 + cx
-    mov ax, 320
-    mul bx
-    add ax, cx
-    mov di, ax
-    mov al, es:[di]
-    cmp al, 0Ch    ; Paddle color (Light Red)
-    jne SkipPaddleCol
-    ; bounce
-    mov ballDY, -2
-SkipPaddleCol:
-    ret
-CHECK_PADDLE_COLLISION endp
-
-CHECK_BRICK_COLLISION proc
-    mov ax, 0A000h
-    mov es, ax
-
-    ; Calculate the leading edge of the ball to know EXACTLY which brick it hits
-    mov bx, ballY
-    cmp ballDY, 0
-    jl CheckYUp
-    add bx, 3 ; if moving DOWN, leading edge is bottom of ball
-CheckYUp:
-
-    mov cx, ballX
-    cmp ballDX, 0
-    jl CheckXLeft
-    add cx, 3 ; if moving RIGHT, leading edge is right of ball
-CheckXLeft:
-
-    ; Limit bounds so we don't trigger Division Overflow and keep within array!
-    ; 5 rows * 12 height = up to Y=85
-    cmp bx, 25
-    jl SkipBrickCol
-    cmp bx, 84    ; bricks don't exist below Y=84
-    jg SkipBrickCol
-    cmp cx, 25
-    jl SkipBrickCol
-    cmp cx, 304    ; total width 25 + 8*35 = 305
-    jg SkipBrickCol
-
-    ; We are in the bounds of the brick grid
-    ; Row = (Y - 25) / 12
-    mov ax, bx
-    sub ax, 25
-    xor dx, dx
-    push cx
-    mov cx, 12
-    div cx
-    pop cx
-    ; Let's make sure it's not strictly in the gap space (dx >= 8)
-    cmp dx, 8
-    jge SkipBrickCol
-    mov di, ax ; DI = row
-
-    ; Col = (X - 25) / 35
-    mov ax, cx
-    sub ax, 25
-    xor dx, dx
-    push cx
-    mov cx, 35
-    div cx
-    pop cx
-    ; Let's make sure it's not strictly in the gap space (dx >= 32)
-    cmp dx, 32
-    jge SkipBrickCol
-    ; AX = col
-    
-    ; Check if brick is alive: bricks[row * 8 + col]
-    push bx
-    mov bx, di
-    shl bx, 3 ; row * 8
-    add bx, ax
-    mov dl, byte ptr [bricks + bx]
-    cmp dl, 0
-    pop bx
-    je SkipBrickCol ; already destroyed
-
-    ; It's a live brick! Hit it!
-    ; Mark as destroyed
-    push bx
-    push ax ; save col
-    mov bx, di
-    shl bx, 3 ; row * 8
-    add bx, ax
-    mov byte ptr [bricks + bx], 0
-    pop ax
-    pop bx
-
-    ; Reverse ballDY properly avoiding edge case
-    push ax
-    mov ax, ballDY
-    neg ax
-    mov ballDY, ax
-    pop ax
-
-    add score, 100
-    call UPDATE_HUD_VALUES
-
-    ; Erase the brick visual
-    ; Find base X and Y again for DrawRect inside the exact slot
-    ; base Y = row * 12 + 25
-    push ax ; Save COL
-    mov ax, di
-    push cx
-    mov cx, 12
-    mul cx
-    pop cx
-    add ax, 25
-    push ax ; base Y
-
-    ; base X = col * 35 + 25
-    pop bx ; BX = base Y (oops wait, need to calculate X first without losing Y)
-    push bx
-    
-    ; Wait, we saved col in memory above `push ax`. Let's restore it.
-    pop bx ; base Y (discarded temporarily)
-    pop ax ; restore COL
-    
-    push cx
-    mov cx, 35
-    mul cx
-    pop cx
-    add ax, 25
-    mov cx, ax ; CX = base X
-
-    ; Now restore base Y perfectly
-    mov ax, di
-    push cx
-    mov cx, 12
-    mul cx
-    pop cx
-    add ax, 25
-    mov bx, ax ; BX = base Y
-
-    mov dx, 32 ; brick width
-    mov rect_height, 8
-    mov al, bgColorGame ; Erase visually using background color
-    call DrawRect
-
-SkipBrickCol:
-    ret
-CHECK_BRICK_COLLISION endp
+LoseLife endp
 
 ; ======================================================
-; Custom Raster Font Iterator strictly for rapid HUD drawing
-; Completely skips standard BIOS INT 10h to prevent ghosting
-; Inputs: DX = Y(px), CX = X(px), SI = String Offset, BL = Color
+; GAME PROCEDURE: CheckBrickCollision
+; Removes one active brick per frame and updates score.
 ; ======================================================
-PrintStringHUD proc
+CheckBrickCollision proc
     push ax
+    push bx
     push cx
+    push dx
     push si
-NextCharHUD:
-    lodsb
-    cmp al, 0
-    je DonePrintingHUD
-    call PrintChar_Mode13h
-    add cx, 8
-    jmp NextCharHUD
-DonePrintingHUD:
+    push di
+
+    xor si, si
+    mov bx, BRICK_START_Y
+    mov scan_row, 0
+
+BrickScanRow:
+    mov cx, BRICK_START_X
+    mov di, BRICK_COLS
+
+BrickScanCol:
+    cmp byte ptr bricks[si], 0
+    je NextBrickCheck
+
+    mov ax, ball_x
+    add ax, 6
+    cmp ax, cx
+    jl NextBrickCheck
+
+    mov ax, cx
+    add ax, BRICK_W
+    mov dx, ball_x
+    cmp dx, ax
+    jg NextBrickCheck
+
+    mov ax, ball_y
+    add ax, 6
+    cmp ax, bx
+    jl NextBrickCheck
+
+    mov ax, bx
+    add ax, BRICK_H
+    mov dx, ball_y
+    cmp dx, ax
+    jg NextBrickCheck
+
+    mov byte ptr bricks[si], 0
+    add score, 10
+    mov hud_dirty, 1
+    dec bricks_left
+    neg ball_dy
+
+    push ax
+    push dx
+    mov rect_height, BRICK_H
+    mov dx, BRICK_W
+    mov al, 0
+    call DrawRect
+    pop dx
+    pop ax
+
+    cmp bricks_left, 0
+    jne BrickCollisionDone
+    mov game_result, 1
+    mov current_screen, 6
+    mov bg_color, 0
+    jmp BrickCollisionDone
+
+NextBrickCheck:
+    inc si
+    add cx, BRICK_STEP_X
+    dec di
+    jnz BrickScanCol
+
+    add bx, BRICK_STEP_Y
+    inc scan_row
+    cmp scan_row, BRICK_ROWS
+    jl BrickScanRow
+
+BrickCollisionDone:
+    pop di
     pop si
+    pop dx
     pop cx
+    pop bx
     pop ax
     ret
-PrintStringHUD endp
+CheckBrickCollision endp
 
-UPDATE_HUD_VALUES proc
-    pusha
-    ; Updates the underlying ascii string parameters for score and lives
-    ; 1. Process Score into hud_score ('Score: 0000')
+; ======================================================
+; GAME PROCEDURE: UpdateHud
+; Converts score and lives variables into display strings.
+; ======================================================
+UpdateHud proc
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
+
+    mov al, lives
+    add al, '0'
+    mov hud_lives[7], al
+
     mov ax, score
+    cmp ax, 9999
+    jbe ScoreInRange
+    mov ax, 9999
+
+ScoreInRange:
+    mov di, offset hud_score
+    add di, 10
     mov bx, 10
     mov cx, 4
-    mov di, offset hud_score + 10 ; Point to last digit of '0000'
-ScoreLoop:
+
+ScoreDigitLoop:
     xor dx, dx
     div bx
     add dl, '0'
     mov [di], dl
     dec di
-    loop ScoreLoop
+    loop ScoreDigitLoop
 
-    ; 2. Process Lives into hud_lives ('Lives: 3')
-    mov al, lives
-    add al, '0'
-    mov di, offset hud_lives + 7
-    mov [di], al
-
-    ; Redraw HUD
-    call UPDATE_HUD
-    popa
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax
     ret
-UPDATE_HUD_VALUES endp
+UpdateHud endp
 
-UPDATE_HUD proc
-    pusha
+; ======================================================
+; GAME PROCEDURE: DrawGameFrame
+; Draws active bricks, paddle, ball, and HUD.
+; ======================================================
+DrawGameFrame proc
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
 
-    ; Erase previous text safely to prevent number overlapping
-    mov bx, 8            ; Y = 8
-    mov cx, 0            ; Start at X=0
-    mov dx, 320          ; Clear entire screen width
-    mov al, bgColorGame  ; Erase with Background color
-    mov rect_height, 8   ; Block 8 pixels tall
+    cmp game_first_draw, 1
+    je DrawFrameStatic
+
+    ; Erase only the old moving objects. Bricks are redrawn after this,
+    ; so the ball never leaves holes when it crosses the brick rows.
+    mov bx, prev_paddle_y
+    mov cx, prev_paddle_x
+    mov dx, 60
+    mov al, 0
+    mov rect_height, 6
     call DrawRect
 
-    ; Now use custom pixel renderer for HUD to completely bypass standard BIOS Text bugs
-    mov dx, 8      ; Y = 8
-    mov cx, 16     ; X = Col 2 * 8
+    mov bx, prev_ball_y
+    mov cx, prev_ball_x
+    mov dx, 7
+    mov al, 0
+    mov rect_height, 7
+    call DrawRect
+    call RestoreBricksUnderOldBall
+
+    jmp DrawFrameMoving
+
+DrawFrameStatic:
+    ; One-time playfield setup for this round.
+    mov bx, 19
+    mov cx, 2
+    mov dx, 316
+    mov al, 0
+    mov rect_height, 179
+    call DrawRect
+
+    ; HUD band
+    mov bx, 0
+    mov cx, 0
+    mov dx, 320
+    mov al, 01h
+    mov rect_height, 17
+    call DrawRect
+
+    ; Playfield border
+    mov bx, 17
+    mov cx, 0
+    mov dx, 320
+    mov al, 08h
+    mov rect_height, 2
+    call DrawRect
+
+    mov bx, 198
+    mov cx, 0
+    mov dx, 320
+    mov al, 08h
+    mov rect_height, 2
+    call DrawRect
+
+    mov bx, 17
+    mov cx, 0
+    mov dx, 2
+    mov al, 08h
+    mov rect_height, 183
+    call DrawRect
+
+    mov bx, 17
+    mov cx, 318
+    mov dx, 2
+    mov al, 08h
+    mov rect_height, 183
+    call DrawRect
+
+    mov game_first_draw, 0
+
+DrawFrameBricks:
+    mov draw_index, 0
+    mov draw_row, 0
+    mov bx, BRICK_START_Y
+
+DrawFrameRow:
+    mov cx, BRICK_START_X
+    mov di, BRICK_COLS
+    xor ax, ax
+    mov al, draw_row
+    mov si, ax
+    mov al, row_colors[si]
+    mov draw_color, al
+
+DrawFrameCol:
+    mov si, draw_index
+    cmp byte ptr bricks[si], 0
+    je SkipBrickDraw
+
+    mov rect_height, BRICK_H
+    mov dx, BRICK_W
+    mov al, draw_color
+    call DrawRect
+
+SkipBrickDraw:
+    inc draw_index
+    add cx, BRICK_STEP_X
+    dec di
+    jnz DrawFrameCol
+
+    add bx, BRICK_STEP_Y
+    inc draw_row
+    cmp draw_row, BRICK_ROWS
+    jl DrawFrameRow
+
+DrawFrameMoving:
+    mov bx, paddle_y
+    mov cx, paddle_x
+    mov dx, 60
+    mov al, 0Ch
+    mov rect_height, 6
+    call DrawRect
+
+    mov bx, ball_y
+    mov cx, ball_x
+    inc cx
+    mov dx, 4
+    mov al, 0Fh
+    mov rect_height, 1
+    call DrawRect
+
+    mov bx, ball_y
+    inc bx
+    mov cx, ball_x
+    mov dx, 6
+    mov al, 0Fh
+    mov rect_height, 4
+    call DrawRect
+
+    mov bx, ball_y
+    add bx, 5
+    mov cx, ball_x
+    inc cx
+    mov dx, 4
+    mov al, 0Fh
+    mov rect_height, 1
+    call DrawRect
+
+    cmp hud_dirty, 1
+    jne DrawFrameSavePositions
+
+    mov dh, 1
+    mov dl, 2
     mov si, offset hud_score
     mov bl, 0Fh
-    call PrintStringHUD
+    call PrintString
 
-    mov dx, 8
-    mov cx, 112    ; X = Col 14 * 8
+    mov dh, 1
+    mov dl, 14
     mov si, offset hud_lives
     mov bl, 0Fh
-    call PrintStringHUD
+    call PrintString
 
-    mov dx, 8
-    mov cx, 200    ; X = Col 25 * 8
+    mov dh, 1
+    mov dl, 25
     mov si, offset hud_level
     mov bl, 0Fh
-    call PrintStringHUD
+    call PrintString
 
-    ; Draw player name natively preventing any edge duplication wrapping
-    mov al, name_len
-    cmp al, 0
-    je SkipNamePrint
-    mov cx, 312    ; Base Col 39 * 8 (Max Edge)
-    xor ah, ah
-    shl ax, 3      ; Multiply length by 8 for pixel offset
-    sub cx, ax     ; Shift left
-    mov dx, 8      ; Y = 8
+    mov dh, 1
+    mov dl, 39
+    sub dl, name_len
     mov si, offset player_name
     mov bl, 0Eh
-    call PrintStringHUD
-SkipNamePrint:
-    popa
-    ret
-UPDATE_HUD endp
+    call PrintString
+    mov hud_dirty, 0
 
-SHOW_GAME_OVER proc
+DrawFrameSavePositions:
+    mov ax, paddle_x
+    mov prev_paddle_x, ax
+    mov ax, paddle_y
+    mov prev_paddle_y, ax
+    mov ax, ball_x
+    mov prev_ball_x, ax
+    mov ax, ball_y
+    mov prev_ball_y, ax
+
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
     ret
-SHOW_GAME_OVER endp
+DrawGameFrame endp
+
+; ======================================================
+; GAME PROCEDURE: RestoreBricksUnderOldBall
+; Redraws only active bricks touched by the old ball erase.
+; ======================================================
+RestoreBricksUnderOldBall proc
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+
+    xor si, si
+    mov bx, BRICK_START_Y
+    mov scan_row, 0
+
+RestoreBrickRow:
+    mov cx, BRICK_START_X
+    mov di, BRICK_COLS
+    xor ax, ax
+    mov al, scan_row
+    push si
+    mov si, ax
+    mov al, row_colors[si]
+    mov draw_color, al
+    pop si
+
+RestoreBrickCol:
+    cmp byte ptr bricks[si], 0
+    je RestoreNextBrick
+
+    mov ax, prev_ball_x
+    add ax, 7
+    cmp ax, cx
+    jl RestoreNextBrick
+
+    mov ax, cx
+    add ax, BRICK_W
+    mov dx, prev_ball_x
+    cmp dx, ax
+    jg RestoreNextBrick
+
+    mov ax, prev_ball_y
+    add ax, 7
+    cmp ax, bx
+    jl RestoreNextBrick
+
+    mov ax, bx
+    add ax, BRICK_H
+    mov dx, prev_ball_y
+    cmp dx, ax
+    jg RestoreNextBrick
+
+    mov rect_height, BRICK_H
+    mov dx, BRICK_W
+    mov al, draw_color
+    call DrawRect
+
+RestoreNextBrick:
+    inc si
+    add cx, BRICK_STEP_X
+    dec di
+    jnz RestoreBrickCol
+
+    add bx, BRICK_STEP_Y
+    inc scan_row
+    cmp scan_row, BRICK_ROWS
+    jl RestoreBrickRow
+
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+RestoreBricksUnderOldBall endp
+
+; ======================================================
+; GAME PROCEDURE: DelayFrame
+; Uses BIOS wait to control game speed.
+; ======================================================
+DelayFrame proc
+    push ax
+    push cx
+    push dx
+
+    mov ah, 86h
+    mov cx, 0
+    mov dx, 15000
+    int 15h
+    jnc DelayDone
+
+    mov cx, 0FFFFh
+DelayFallback:
+    loop DelayFallback
+
+DelayDone:
+    pop dx
+    pop cx
+    pop ax
+    ret
+DelayFrame endp
 
 ; ======================================================
 ; HELPER PROCEDURE: ClearScreen
@@ -1084,24 +1473,17 @@ PrintString proc
     push si
     
 NextChar:
+    mov ah, 02h
+    mov bh, 0
+    int 10h
+
     lodsb
     cmp al, 0
     je DonePrinting
 
-    ; Set cursor ONLY for valid character to prevent terminal overflow wrapping
-    push ax
-    mov ah, 02h
-    mov bh, 0
-    int 10h
-    pop ax
-
-    ; Print the character protecting AL char
-    push ax
     mov ah, 09h
-    mov bh, 0    ; Page 0
-    mov cx, 1    ; Print 1 time
+    mov cx, 1
     int 10h
-    pop ax
 
     inc dl
     jmp NextChar
