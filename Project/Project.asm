@@ -22,6 +22,8 @@ BRICK_STEP_Y    equ 9
     player_name     db 16 dup(0)
     name_len        db 0
     row_colors      db 0Ch, 0Eh, 0Ah, 0Bh, 0Dh, 09h
+    hard2_color     db 07h
+    hard3_color     db 0Fh
     rect_height     dw 10
 
     wide_box_top    db '+-------------------------------+', 0
@@ -51,7 +53,7 @@ BRICK_STEP_Y    equ 9
     instr_1         db 'Use A/D or Left/Right', 0
     instr_2         db 'Bounce ball to break bricks', 0
     instr_3         db 'Do not let the ball fall!', 0
-    instr_4         db 'Clear all bricks to win', 0
+    instr_4         db 'Press P to pause/resume', 0
     instr_ret       db 'Press Enter/Backspace', 0
 
     score_title     db 'HIGH SCORES', 0
@@ -64,8 +66,24 @@ BRICK_STEP_Y    equ 9
     hud_level       db 'Level: 1', 0
 
     game_over_title db 'GAME OVER', 0
-    level_done_msg  db 'LEVEL COMPLETE', 0
+    level1_done_msg db 'LEVEL 1 COMPLETE!', 0
+    level2_done_msg db 'LEVEL 2 COMPLETE!', 0
+    level3_done_msg db 'YOU BEAT THE GAME!', 0
     game_over_ret   db 'Press Enter/Backspace', 0
+    next_level_msg   db 'Loading next level...', 0
+    pause_title     db 'PAUSED', 0
+    pause_hint      db 'Press P to resume', 0
+
+    active_rows     db 3
+    active_bricks   db 36
+    frame_delay     dw 18000
+    ball_speed       dw 2
+    ball_edge_speed  dw 3
+    paddle_width     dw 60
+    paddle_half      dw 30
+    paddle_left_zone dw 12
+    paddle_right_zone dw 48
+    paddle_max_x     dw 256
 
     paddle_x        dw 130
     paddle_y        dw 184
@@ -594,8 +612,18 @@ ShowGameOver:
     mov si, offset game_over_title
     cmp game_result, 0
     je GameOverTitleReady
+    
     mov dl, 12
-    mov si, offset level_done_msg
+    mov si, offset level1_done_msg
+    cmp hud_level[7], '1'
+    je GameOverTitleReady
+    
+    mov si, offset level2_done_msg
+    cmp hud_level[7], '2'
+    je GameOverTitleReady
+    
+    mov si, offset level3_done_msg
+
 GameOverTitleReady:
     mov bl, 0Ch
     call PrintString
@@ -616,17 +644,148 @@ GameOverTitleReady:
     mov dh, 14
     mov dl, 7
     mov si, offset game_over_ret
+    cmp game_result, 1
+    jne GameOverPromptReady
+    mov dl, 10
+    mov si, offset next_level_msg
+GameOverPromptReady:
     mov bl, 08h
     call PrintString
+
+    cmp game_result, 1
+    je AutoNextLevel
 
     mov ah, 00h
     int 16h
     cmp al, 13
-    je ReturnMenu
+    je CheckGameOverReturn
     cmp al, 8 ; Backspace
-    je ReturnMenu
+    je CheckGameOverReturn
     cmp al, 27 ; Escape
-    je ReturnMenu
+    je CheckGameOverReturn
+    jmp GameLoop
+
+CheckGameOverReturn:
+    cmp game_result, 1
+    je GoNextLevel
+    jmp ReturnMenu
+
+AutoNextLevel:
+    mov cx, 70
+AutoNextLevelPause:
+    call DelayFrame
+    loop AutoNextLevelPause
+    jmp GoNextLevel
+
+GoNextLevel:
+    inc hud_level[7]
+    cmp hud_level[7], '4'
+    je ReturnMenu ; Go to menu on level 4 (win)
+    
+    cmp hud_level[7], '2'
+    je SetupLevel2
+    cmp hud_level[7], '3'
+    je SetupLevel3
+    jmp SetupLevel1
+
+SetupLevel1:
+    mov active_rows, 3     ; L1 rows
+    mov active_bricks, 36  ; L1 bricks
+    mov frame_delay, 18000 ; L1 speed
+    mov ball_speed, 2
+    mov ball_edge_speed, 3
+    mov paddle_width, 60
+    mov paddle_half, 30
+    mov paddle_left_zone, 12
+    mov paddle_right_zone, 48
+    mov paddle_max_x, 256
+    jmp StartLevelRun
+
+SetupLevel2:
+    mov active_rows, 5     ; L2 rows
+    mov active_bricks, 60  ; L2 bricks
+    mov frame_delay, 13846 ; L2 speed = 1.3x L1
+    mov ball_speed, 2
+    mov ball_edge_speed, 3
+    mov paddle_width, 50
+    mov paddle_half, 25
+    mov paddle_left_zone, 10
+    mov paddle_right_zone, 40
+    mov paddle_max_x, 266
+    jmp StartLevelRun
+
+SetupLevel3:
+    mov active_rows, 6     ; L3 rows
+    mov active_bricks, 72  ; L3 bricks
+    mov frame_delay, 11250 ; L3 speed = 1.6x L1
+    mov ball_speed, 2
+    mov ball_edge_speed, 3
+    mov paddle_width, 40
+    mov paddle_half, 20
+    mov paddle_left_zone, 8
+    mov paddle_right_zone, 32
+    mov paddle_max_x, 276
+    jmp StartLevelRun
+
+StartLevelRun:
+    mov al, active_bricks
+    mov bricks_left, al
+    mov game_result, 0
+    mov game_first_draw, 1
+    mov hud_dirty, 1
+    call ResetBall
+
+    ; Clear and reload bricks
+    push di
+    push cx
+    push ax
+    mov di, offset bricks
+    cmp hud_level[7], '3'
+    je ResetLevel3Bricks
+
+    xor cx, cx
+    mov cl, active_bricks
+    mov al, 1
+ResetBricksLoop:
+    mov [di], al
+    inc di
+    loop ResetBricksLoop
+    jmp ResetBricksDone
+
+ResetLevel3Bricks:
+    mov scan_row, 0
+ResetLevel3Row:
+    mov al, 3
+    cmp scan_row, 2
+    jl ResetLevel3ColSetup
+
+    mov al, 2
+    cmp scan_row, 4
+    jl ResetLevel3ColSetup
+
+    mov al, 1
+
+ResetLevel3ColSetup:
+    xor cx, cx
+    mov cl, BRICK_COLS
+ResetLevel3Col:
+    mov [di], al
+    inc di
+    loop ResetLevel3Col
+
+    inc scan_row
+    mov al, active_rows
+    cmp scan_row, al
+    jl ResetLevel3Row
+
+ResetBricksDone:
+    pop ax
+    pop cx
+    pop di
+
+    call UpdateHud
+    mov bg_color, 0
+    mov current_screen, 5
     jmp GameLoop
 
 ExitProgram:
@@ -718,14 +877,29 @@ InitGame proc
 
     mov score, 0
     mov lives, 3
-    mov bricks_left, BRICK_COUNT
+    mov hud_level[7], '1'
+    
+    mov active_rows, 3     ; L1 rows
+    mov active_bricks, 36  ; L1 bricks
+    mov frame_delay, 18000 ; L1 speed
+    mov ball_speed, 2
+    mov ball_edge_speed, 3
+    mov paddle_width, 60
+    mov paddle_half, 30
+    mov paddle_left_zone, 12
+    mov paddle_right_zone, 48
+    mov paddle_max_x, 256
+
+    mov al, active_bricks
+    mov bricks_left, al
     mov game_result, 0
     mov game_first_draw, 1
     mov hud_dirty, 1
     call ResetBall
 
     mov di, offset bricks
-    mov cx, BRICK_COUNT
+    xor cx, cx
+    mov cl, active_bricks
     mov al, 1
 InitBricksLoop:
     mov [di], al
@@ -745,16 +919,20 @@ InitGame endp
 ; Restores paddle and ball after start or life loss.
 ; ======================================================
 ResetBall proc
-    mov paddle_x, 130
+    mov ax, 160
+    sub ax, paddle_half
+    mov paddle_x, ax
     mov paddle_y, 184
-    mov prev_paddle_x, 130
+    mov prev_paddle_x, ax
     mov prev_paddle_y, 184
     mov ball_x, 160
     mov ball_y, 174
     mov prev_ball_x, 160
     mov prev_ball_y, 174
-    mov ball_dx, 2
-    mov ball_dy, -2
+    mov ax, ball_speed
+    mov ball_dx, ax
+    neg ax
+    mov ball_dy, ax
     ret
 ResetBall endp
 
@@ -776,6 +954,10 @@ HandleGameInput proc
     je GameInputReturnMenu
     cmp al, 8 ; Backspace
     je GameInputReturnMenu
+    cmp al, 'p'
+    je GameInputPause
+    cmp al, 'P'
+    je GameInputPause
 
     cmp ah, 4Bh ; Left arrow
     je MovePaddleLeft
@@ -806,24 +988,97 @@ SetPaddleLeftEdge:
 
 MovePaddleRight:
     mov ax, paddle_x
-    cmp ax, 248
-    jae SetPaddleRightEdge
     add ax, 8
+    cmp ax, paddle_max_x
+    ja SetPaddleRightEdge
     mov paddle_x, ax
     jmp NoGameKey
 
 SetPaddleRightEdge:
-    mov paddle_x, 256
+    mov ax, paddle_max_x
+    mov paddle_x, ax
     jmp NoGameKey
 
 GameInputReturnMenu:
     mov bg_color, 0
     mov current_screen, 2
+    jmp NoGameKey
+
+GameInputPause:
+    call PauseGame
 
 NoGameKey:
     pop ax
     ret
 HandleGameInput endp
+
+; ======================================================
+; GAME PROCEDURE: PauseGame
+; Stops gameplay until P resumes, or Escape/Backspace returns to menu.
+; ======================================================
+PauseGame proc
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+
+    mov bx, 82
+    mov cx, 82
+    mov dx, 156
+    mov al, 01h
+    mov rect_height, 38
+    call DrawRect
+
+    mov bx, 86
+    mov cx, 86
+    mov dx, 148
+    mov al, 08h
+    mov rect_height, 30
+    call DrawRect
+
+    mov dh, 11
+    mov dl, 17
+    mov si, offset pause_title
+    mov bl, 0Eh
+    call PrintString
+
+    mov dh, 13
+    mov dl, 12
+    mov si, offset pause_hint
+    mov bl, 0Fh
+    call PrintString
+
+PauseWaitKey:
+    mov ah, 00h
+    int 16h
+    cmp al, 'p'
+    je PauseResume
+    cmp al, 'P'
+    je PauseResume
+    cmp al, 27 ; Escape
+    je PauseReturnMenu
+    cmp al, 8 ; Backspace
+    je PauseReturnMenu
+    jmp PauseWaitKey
+
+PauseResume:
+    mov game_first_draw, 1
+    mov hud_dirty, 1
+    jmp PauseDone
+
+PauseReturnMenu:
+    mov bg_color, 0
+    mov current_screen, 2
+
+PauseDone:
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+PauseGame endp
 
 ; ======================================================
 ; GAME PROCEDURE: UpdateBall
@@ -845,21 +1100,25 @@ UpdateBall proc
     cmp ax, 3
     jge BallCheckRightWall
     mov ball_x, 3
-    mov ball_dx, 2
+    mov ax, ball_speed
+    mov ball_dx, ax
 
 BallCheckRightWall:
     mov ax, ball_x
     cmp ax, 311
     jle BallCheckTopWall
     mov ball_x, 311
-    mov ball_dx, -2
+    mov ax, ball_speed
+    neg ax
+    mov ball_dx, ax
 
 BallCheckTopWall:
     mov ax, ball_y
     cmp ax, 20
     jge BallCheckBottom
     mov ball_y, 20
-    mov ball_dy, 2
+    mov ax, ball_speed
+    mov ball_dy, ax
 
 BallCheckBottom:
     mov ax, ball_y
@@ -890,7 +1149,7 @@ BallCheckPaddle:
     jl BallCheckBricks
 
     mov ax, paddle_x
-    add ax, 60
+    add ax, paddle_width
     mov dx, ball_x
     cmp dx, ax
     jg BallCheckBricks
@@ -898,30 +1157,42 @@ BallCheckPaddle:
     mov ax, paddle_y
     sub ax, 6
     mov ball_y, ax
-    mov ball_dy, -2
+    mov ax, ball_speed
+    neg ax
+    mov ball_dy, ax
 
     mov ax, ball_x
     add ax, 3
     mov dx, paddle_x
-    add dx, 30
+    add dx, paddle_half
     cmp ax, dx
     jl PaddleHitLeftSide
 
-    mov ball_dx, 2
+    mov ax, ball_speed
+    mov ball_dx, ax
+    mov ax, ball_x
+    add ax, 3
     mov dx, paddle_x
-    add dx, 48
+    add dx, paddle_right_zone
     cmp ax, dx
     jl UpdateBallDone
-    mov ball_dx, 3
+    mov ax, ball_edge_speed
+    mov ball_dx, ax
     jmp UpdateBallDone
 
 PaddleHitLeftSide:
-    mov ball_dx, -2
+    mov ax, ball_speed
+    neg ax
+    mov ball_dx, ax
+    mov ax, ball_x
+    add ax, 3
     mov dx, paddle_x
-    add dx, 12
+    add dx, paddle_left_zone
     cmp ax, dx
     jg UpdateBallDone
-    mov ball_dx, -3
+    mov ax, ball_edge_speed
+    neg ax
+    mov ball_dx, ax
     jmp UpdateBallDone
 
 BallCheckBricks:
@@ -961,7 +1232,7 @@ LoseLife endp
 
 ; ======================================================
 ; GAME PROCEDURE: CheckBrickCollision
-; Removes one active brick per frame and updates score.
+; Damages one active brick per frame and updates score when it breaks.
 ; ======================================================
 CheckBrickCollision proc
     push ax
@@ -1005,12 +1276,14 @@ BrickScanCol:
     cmp dx, ax
     jg NextBrickCheck
 
-    mov byte ptr bricks[si], 0
+    neg ball_dy
+    dec byte ptr bricks[si]
+    cmp byte ptr bricks[si], 0
+    jne BrickDamaged
+
     add score, 10
     mov hud_dirty, 1
     dec bricks_left
-    neg ball_dy
-
     push ax
     push dx
     mov rect_height, BRICK_H
@@ -1027,6 +1300,32 @@ BrickScanCol:
     mov bg_color, 0
     jmp BrickCollisionDone
 
+BrickDamaged:
+    push ax
+    push dx
+    mov al, bricks[si]
+    cmp al, 2
+    je DrawDamagedHard2
+
+    push si
+    xor ah, ah
+    mov al, scan_row
+    mov si, ax
+    mov al, row_colors[si]
+    pop si
+    jmp DrawDamagedBrick
+
+DrawDamagedHard2:
+    mov al, hard2_color
+
+DrawDamagedBrick:
+    mov rect_height, BRICK_H
+    mov dx, BRICK_W
+    call DrawRect
+    pop dx
+    pop ax
+    jmp BrickCollisionDone
+
 NextBrickCheck:
     inc si
     add cx, BRICK_STEP_X
@@ -1035,7 +1334,8 @@ NextBrickCheck:
 
     add bx, BRICK_STEP_Y
     inc scan_row
-    cmp scan_row, BRICK_ROWS
+    mov al, active_rows
+    cmp scan_row, al
     jl BrickScanRow
 
 BrickCollisionDone:
@@ -1109,7 +1409,7 @@ DrawGameFrame proc
     ; so the ball never leaves holes when it crosses the brick rows.
     mov bx, prev_paddle_y
     mov cx, prev_paddle_x
-    mov dx, 60
+    mov dx, paddle_width
     mov al, 0
     mov rect_height, 6
     call DrawRect
@@ -1194,6 +1494,20 @@ DrawFrameCol:
     mov rect_height, BRICK_H
     mov dx, BRICK_W
     mov al, draw_color
+    cmp byte ptr bricks[si], 3
+    je DrawHard3Brick
+    cmp byte ptr bricks[si], 2
+    je DrawHard2Brick
+    jmp DrawBrickReady
+
+DrawHard3Brick:
+    mov al, hard3_color
+    jmp DrawBrickReady
+
+DrawHard2Brick:
+    mov al, hard2_color
+
+DrawBrickReady:
     call DrawRect
 
 SkipBrickDraw:
@@ -1204,13 +1518,14 @@ SkipBrickDraw:
 
     add bx, BRICK_STEP_Y
     inc draw_row
-    cmp draw_row, BRICK_ROWS
+    mov al, active_rows
+    cmp draw_row, al
     jl DrawFrameRow
 
 DrawFrameMoving:
     mov bx, paddle_y
     mov cx, paddle_x
-    mov dx, 60
+    mov dx, paddle_width
     mov al, 0Ch
     mov rect_height, 6
     call DrawRect
@@ -1344,6 +1659,20 @@ RestoreBrickCol:
     mov rect_height, BRICK_H
     mov dx, BRICK_W
     mov al, draw_color
+    cmp byte ptr bricks[si], 3
+    je RestoreHard3Brick
+    cmp byte ptr bricks[si], 2
+    je RestoreHard2Brick
+    jmp RestoreBrickReady
+
+RestoreHard3Brick:
+    mov al, hard3_color
+    jmp RestoreBrickReady
+
+RestoreHard2Brick:
+    mov al, hard2_color
+
+RestoreBrickReady:
     call DrawRect
 
 RestoreNextBrick:
@@ -1354,7 +1683,8 @@ RestoreNextBrick:
 
     add bx, BRICK_STEP_Y
     inc scan_row
-    cmp scan_row, BRICK_ROWS
+    mov al, active_rows
+    cmp scan_row, al
     jl RestoreBrickRow
 
     pop di
@@ -1377,7 +1707,7 @@ DelayFrame proc
 
     mov ah, 86h
     mov cx, 0
-    mov dx, 15000
+    mov dx, frame_delay
     int 15h
     jnc DelayDone
 
