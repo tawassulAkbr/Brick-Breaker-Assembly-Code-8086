@@ -39,6 +39,7 @@ BRICK_STEP_Y    equ 9
     prompt_msg      db '|      Enter Player Name      |', 0
     prompt_mid      db '|                             |', 0
     prompt_bot      db '+-----------------------------+', 0
+    name_required   db 'Name required!', 0
     
     menu_start      db '  Start Game      ', 0
     menu_inst       db '  Instructions    ', 0
@@ -64,18 +65,23 @@ BRICK_STEP_Y    equ 9
     hud_score       db 'Score: 0000', 0
     hud_lives       db 'Lives: 3', 0
     hud_level       db 'Level: 1', 0
+    hud_bonus_none  db 'Bonus: ----', 0
+    hud_bonus_slow  db 'Bonus: SLOW', 0
+    hud_bonus_life  db 'Bonus: LIFE', 0
+    hud_bonus_wide  db 'Bonus: WIDE', 0
 
     game_over_title db 'GAME OVER', 0
     level1_done_msg db 'LEVEL 1 COMPLETE!', 0
     level2_done_msg db 'LEVEL 2 COMPLETE!', 0
     level3_done_msg db 'YOU BEAT THE GAME!', 0
     game_over_ret   db 'Press Enter/Backspace', 0
-    next_level_msg   db 'Loading next level...', 0
+    next_level_msg   db 'Press Enter to continue', 0
     pause_title     db 'PAUSED', 0
     pause_hint      db 'Press P to resume', 0
 
     active_rows     db 3
     active_bricks   db 36
+    base_frame_delay dw 18000
     frame_delay     dw 18000
     ball_speed       dw 2
     ball_edge_speed  dw 3
@@ -99,13 +105,27 @@ BRICK_STEP_Y    equ 9
     lives           db 3
     bricks_left     db BRICK_COUNT
     game_result     db 0 ; 0=lost, 1=level complete
-    bricks          db BRICK_COUNT dup(1)
+    bricks          db BRICK_COUNT dup(10h) ; 00h=broken, high nibble=required hits, low nibble=hits taken
     draw_index      dw 0
     draw_row        db 0
     draw_color      db 0
     scan_row        db 0
     game_first_draw db 1
     hud_dirty       db 1
+    bonus_active    db 0
+    bonus_was_drawn db 0
+    bonus_type      db 0 ; 1=Slow, 2=Life, 3=Wide
+    bonus_color     db 0
+    bonus_letter    db 0
+    bonus_counter   db 0
+    bonus_type_cycle db 0
+    bonus_x         dw 0
+    bonus_y         dw 0
+    prev_bonus_x    dw 0
+    prev_bonus_y    dw 0
+    bonus_dy        dw 2
+    slow_timer      dw 0
+    bonus_wide_active db 0
 
 .code
 main proc
@@ -293,6 +313,17 @@ NameInputBS:
     jmp NameInputLoop
 
 NameInputDone:
+    cmp name_len, 0
+    jne NameInputAccepted
+
+    mov dh, 14
+    mov dl, 13
+    mov si, offset name_required
+    mov bl, 0Ch
+    call PrintString
+    jmp NameInputLoop
+
+NameInputAccepted:
     mov current_screen, 2 ; Goto Menu
     jmp GameLoop
 
@@ -435,6 +466,9 @@ MenuSelect:
     cmp menu_selected, 3
     je ExitGame
 StartGame:
+    cmp name_len, 0
+    je GoNameInput
+
     call InitGame
     mov bg_color, 0 ; 0 = Black background!
     mov current_screen, 5
@@ -594,6 +628,8 @@ ShowGame:
     call UpdateBall
     cmp current_screen, 5
     jne GameLoop
+    call UpdateBonus
+    call UpdatePowerUps
     call UpdateHud
     call DrawGameFrame
     call DelayFrame
@@ -652,30 +688,20 @@ GameOverPromptReady:
     mov bl, 08h
     call PrintString
 
-    cmp game_result, 1
-    je AutoNextLevel
-
     mov ah, 00h
     int 16h
     cmp al, 13
     je CheckGameOverReturn
     cmp al, 8 ; Backspace
-    je CheckGameOverReturn
+    je ReturnMenu
     cmp al, 27 ; Escape
-    je CheckGameOverReturn
+    je ReturnMenu
     jmp GameLoop
 
 CheckGameOverReturn:
     cmp game_result, 1
     je GoNextLevel
     jmp ReturnMenu
-
-AutoNextLevel:
-    mov cx, 70
-AutoNextLevelPause:
-    call DelayFrame
-    loop AutoNextLevelPause
-    jmp GoNextLevel
 
 GoNextLevel:
     inc hud_level[7]
@@ -691,6 +717,7 @@ GoNextLevel:
 SetupLevel1:
     mov active_rows, 3     ; L1 rows
     mov active_bricks, 36  ; L1 bricks
+    mov base_frame_delay, 18000
     mov frame_delay, 18000 ; L1 speed
     mov ball_speed, 2
     mov ball_edge_speed, 3
@@ -704,7 +731,8 @@ SetupLevel1:
 SetupLevel2:
     mov active_rows, 5     ; L2 rows
     mov active_bricks, 60  ; L2 bricks
-    mov frame_delay, 13846 ; L2 speed = 1.3x L1
+    mov base_frame_delay, 15000
+    mov frame_delay, 15000 ; L2 speed = 1.2x L1
     mov ball_speed, 2
     mov ball_edge_speed, 3
     mov paddle_width, 50
@@ -717,6 +745,7 @@ SetupLevel2:
 SetupLevel3:
     mov active_rows, 6     ; L3 rows
     mov active_bricks, 72  ; L3 bricks
+    mov base_frame_delay, 11250
     mov frame_delay, 11250 ; L3 speed = 1.6x L1
     mov ball_speed, 2
     mov ball_edge_speed, 3
@@ -730,6 +759,13 @@ SetupLevel3:
 StartLevelRun:
     mov al, active_bricks
     mov bricks_left, al
+    mov lives, 3
+    mov ax, base_frame_delay
+    mov frame_delay, ax
+    mov bonus_active, 0
+    mov bonus_was_drawn, 0
+    mov slow_timer, 0
+    mov bonus_wide_active, 0
     mov game_result, 0
     mov game_first_draw, 1
     mov hud_dirty, 1
@@ -745,7 +781,7 @@ StartLevelRun:
 
     xor cx, cx
     mov cl, active_bricks
-    mov al, 1
+    mov al, 10h
 ResetBricksLoop:
     mov [di], al
     inc di
@@ -755,15 +791,15 @@ ResetBricksLoop:
 ResetLevel3Bricks:
     mov scan_row, 0
 ResetLevel3Row:
-    mov al, 3
+    mov al, 30h
     cmp scan_row, 2
     jl ResetLevel3ColSetup
 
-    mov al, 2
+    mov al, 20h
     cmp scan_row, 4
     jl ResetLevel3ColSetup
 
-    mov al, 1
+    mov al, 10h
 
 ResetLevel3ColSetup:
     xor cx, cx
@@ -881,6 +917,7 @@ InitGame proc
     
     mov active_rows, 3     ; L1 rows
     mov active_bricks, 36  ; L1 bricks
+    mov base_frame_delay, 18000
     mov frame_delay, 18000 ; L1 speed
     mov ball_speed, 2
     mov ball_edge_speed, 3
@@ -892,6 +929,10 @@ InitGame proc
 
     mov al, active_bricks
     mov bricks_left, al
+    mov bonus_active, 0
+    mov bonus_was_drawn, 0
+    mov slow_timer, 0
+    mov bonus_wide_active, 0
     mov game_result, 0
     mov game_first_draw, 1
     mov hud_dirty, 1
@@ -900,7 +941,7 @@ InitGame proc
     mov di, offset bricks
     xor cx, cx
     mov cl, active_bricks
-    mov al, 1
+    mov al, 10h
 InitBricksLoop:
     mov [di], al
     inc di
@@ -1231,6 +1272,232 @@ LoseLifeDone:
 LoseLife endp
 
 ; ======================================================
+; GAME PROCEDURE: TrySpawnBonus
+; Uses a counter trigger so only some broken bricks drop a bonus.
+; Inputs: CX = brick X, BX = brick Y
+; ======================================================
+TrySpawnBonus proc
+    push ax
+    push bx
+    push cx
+    push dx
+
+    cmp bonus_active, 1
+    je TrySpawnBonusDone
+
+    inc bonus_counter
+    mov al, bonus_counter
+    and al, 03h
+    cmp al, 0
+    jne TrySpawnBonusDone
+
+    mov ax, cx
+    add ax, 6
+    mov bonus_x, ax
+    mov prev_bonus_x, ax
+
+    mov ax, bx
+    add ax, BRICK_H
+    mov bonus_y, ax
+    mov prev_bonus_y, ax
+
+    inc bonus_type_cycle
+    cmp bonus_type_cycle, 3
+    jbe BonusTypeReady
+    mov bonus_type_cycle, 1
+
+BonusTypeReady:
+    mov al, bonus_type_cycle
+    mov bonus_type, al
+    cmp al, 1
+    je SpawnSlowBonus
+    cmp al, 2
+    je SpawnLifeBonus
+    jmp SpawnWideBonus
+
+SpawnSlowBonus:
+    mov bonus_color, 03h
+    mov bonus_letter, 'S'
+    jmp SpawnBonusReady
+
+SpawnLifeBonus:
+    mov bonus_color, 02h
+    mov bonus_letter, 'L'
+    jmp SpawnBonusReady
+
+SpawnWideBonus:
+    mov bonus_color, 0Eh
+    mov bonus_letter, 'W'
+
+SpawnBonusReady:
+    mov bonus_active, 1
+    mov hud_dirty, 1
+
+TrySpawnBonusDone:
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+TrySpawnBonus endp
+
+; ======================================================
+; GAME PROCEDURE: UpdateBonus
+; Moves the active bonus, collects it on paddle contact, or drops it.
+; ======================================================
+UpdateBonus proc
+    push ax
+    push bx
+    push dx
+
+    cmp bonus_active, 1
+    jne UpdateBonusDone
+
+    mov ax, bonus_y
+    add ax, bonus_dy
+    mov bonus_y, ax
+
+    mov ax, bonus_y
+    add ax, 8
+    cmp ax, paddle_y
+    jl BonusCheckMiss
+
+    mov ax, bonus_y
+    mov dx, paddle_y
+    add dx, 6
+    cmp ax, dx
+    jg BonusMissed
+
+    mov ax, bonus_x
+    add ax, 8
+    cmp ax, paddle_x
+    jl BonusCheckMiss
+
+    mov ax, paddle_x
+    add ax, paddle_width
+    mov dx, bonus_x
+    cmp dx, ax
+    jg BonusCheckMiss
+
+    call ApplyBonus
+    mov bonus_active, 0
+    mov hud_dirty, 1
+    jmp UpdateBonusDone
+
+BonusCheckMiss:
+    mov ax, bonus_y
+    cmp ax, 191
+    jle UpdateBonusDone
+
+BonusMissed:
+    mov bonus_active, 0
+    mov hud_dirty, 1
+
+UpdateBonusDone:
+    pop dx
+    pop bx
+    pop ax
+    ret
+UpdateBonus endp
+
+; ======================================================
+; GAME PROCEDURE: ApplyBonus
+; Applies S=slow ball, L=extra life, W=wide paddle.
+; ======================================================
+ApplyBonus proc
+    push ax
+    push bx
+    push cx
+    push dx
+
+    cmp bonus_type, 1
+    je ApplySlowBonus
+    cmp bonus_type, 2
+    je ApplyLifeBonus
+    cmp bonus_type, 3
+    je ApplyWideBonus
+    jmp ApplyBonusDone
+
+ApplySlowBonus:
+    mov ax, base_frame_delay
+    add ax, 6000
+    mov frame_delay, ax
+    mov slow_timer, 350
+    jmp ApplyBonusDone
+
+ApplyLifeBonus:
+    cmp lives, 5
+    jae ApplyBonusDone
+    inc lives
+    mov hud_dirty, 1
+    jmp ApplyBonusDone
+
+ApplyWideBonus:
+    cmp bonus_wide_active, 1
+    je ApplyBonusDone
+    mov bonus_wide_active, 1
+
+    mov ax, paddle_width
+    mov bx, 3
+    mul bx
+    mov bx, 2
+    div bx
+    mov paddle_width, ax
+    mov bx, ax
+
+    shr ax, 1
+    mov paddle_half, ax
+
+    mov ax, bx
+    xor dx, dx
+    mov cx, 5
+    div cx
+    mov paddle_left_zone, ax
+    mov cx, bx
+    sub cx, ax
+    mov paddle_right_zone, cx
+
+    mov ax, 316
+    sub ax, bx
+    mov paddle_max_x, ax
+
+    mov ax, paddle_x
+    cmp ax, paddle_max_x
+    jle ApplyBonusDone
+    mov ax, paddle_max_x
+    mov paddle_x, ax
+
+ApplyBonusDone:
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+ApplyBonus endp
+
+; ======================================================
+; GAME PROCEDURE: UpdatePowerUps
+; Expires timed power-up effects.
+; ======================================================
+UpdatePowerUps proc
+    push ax
+
+    cmp slow_timer, 0
+    je UpdatePowerUpsDone
+
+    dec slow_timer
+    cmp slow_timer, 0
+    jne UpdatePowerUpsDone
+
+    mov ax, base_frame_delay
+    mov frame_delay, ax
+
+UpdatePowerUpsDone:
+    pop ax
+    ret
+UpdatePowerUps endp
+
+; ======================================================
 ; GAME PROCEDURE: CheckBrickCollision
 ; Damages one active brick per frame and updates score when it breaks.
 ; ======================================================
@@ -1277,9 +1544,17 @@ BrickScanCol:
     jg NextBrickCheck
 
     neg ball_dy
-    dec byte ptr bricks[si]
-    cmp byte ptr bricks[si], 0
-    jne BrickDamaged
+    mov al, bricks[si]
+    mov dl, al
+    and dl, 0F0h        ; high nibble = required hits
+    and al, 0Fh         ; low nibble = hits already taken
+    inc al
+    mov ah, dl
+    shr ah, 4
+    cmp al, ah
+    jl BrickStillAlive
+
+    mov byte ptr bricks[si], 0
 
     add score, 10
     mov hud_dirty, 1
@@ -1293,6 +1568,8 @@ BrickScanCol:
     pop dx
     pop ax
 
+    call TrySpawnBonus
+
     cmp bricks_left, 0
     jne BrickCollisionDone
     mov game_result, 1
@@ -1300,19 +1577,37 @@ BrickScanCol:
     mov bg_color, 0
     jmp BrickCollisionDone
 
+BrickStillAlive:
+    or al, dl
+    mov bricks[si], al
+
 BrickDamaged:
     push ax
     push dx
-    mov al, bricks[si]
-    cmp al, 2
-    je DrawDamagedHard2
-
     push si
     xor ah, ah
     mov al, scan_row
     mov si, ax
     mov al, row_colors[si]
     pop si
+
+    push dx
+    mov ah, bricks[si]
+    mov dl, ah
+    and ah, 0F0h
+    shr ah, 4
+    and dl, 0Fh
+    sub ah, dl
+    pop dx
+
+    cmp ah, 3
+    je DrawDamagedHard3
+    cmp ah, 2
+    je DrawDamagedHard2
+    jmp DrawDamagedBrick
+
+DrawDamagedHard3:
+    mov al, hard3_color
     jmp DrawDamagedBrick
 
 DrawDamagedHard2:
@@ -1422,6 +1717,18 @@ DrawGameFrame proc
     call DrawRect
     call RestoreBricksUnderOldBall
 
+    cmp bonus_was_drawn, 1
+    jne SkipOldBonusErase
+    mov bx, prev_bonus_y
+    mov cx, prev_bonus_x
+    mov dx, 9
+    mov al, 0
+    mov rect_height, 9
+    call DrawRect
+    call RestoreBricksUnderOldBonus
+
+SkipOldBonusErase:
+
     jmp DrawFrameMoving
 
 DrawFrameStatic:
@@ -1494,9 +1801,17 @@ DrawFrameCol:
     mov rect_height, BRICK_H
     mov dx, BRICK_W
     mov al, draw_color
-    cmp byte ptr bricks[si], 3
+    push dx
+    mov ah, bricks[si]
+    mov dl, ah
+    and ah, 0F0h
+    shr ah, 4
+    and dl, 0Fh
+    sub ah, dl
+    pop dx
+    cmp ah, 3
     je DrawHard3Brick
-    cmp byte ptr bricks[si], 2
+    cmp ah, 2
     je DrawHard2Brick
     jmp DrawBrickReady
 
@@ -1555,8 +1870,44 @@ DrawFrameMoving:
     mov rect_height, 1
     call DrawRect
 
+    cmp bonus_active, 1
+    jne SkipBonusDraw
+
+    mov bx, bonus_y
+    mov cx, bonus_x
+    mov dx, 9
+    mov al, bonus_color
+    mov rect_height, 9
+    call DrawRect
+
+    mov al, bonus_letter
+    mov cx, bonus_x
+    inc cx
+    mov dx, bonus_y
+    inc dx
+    mov bl, 00h
+    call PrintChar_Mode13h
+
+SkipBonusDraw:
+
     cmp hud_dirty, 1
     jne DrawFrameSavePositions
+
+    mov dh, 0
+    mov dl, 2
+    mov si, offset hud_bonus_none
+    cmp bonus_active, 1
+    jne DrawHudBonusReady
+    mov si, offset hud_bonus_slow
+    cmp bonus_type, 1
+    je DrawHudBonusReady
+    mov si, offset hud_bonus_life
+    cmp bonus_type, 2
+    je DrawHudBonusReady
+    mov si, offset hud_bonus_wide
+DrawHudBonusReady:
+    mov bl, 0Bh
+    call PrintString
 
     mov dh, 1
     mov dl, 2
@@ -1593,6 +1944,12 @@ DrawFrameSavePositions:
     mov prev_ball_x, ax
     mov ax, ball_y
     mov prev_ball_y, ax
+    mov ax, bonus_x
+    mov prev_bonus_x, ax
+    mov ax, bonus_y
+    mov prev_bonus_y, ax
+    mov al, bonus_active
+    mov bonus_was_drawn, al
 
     pop di
     pop si
@@ -1659,9 +2016,17 @@ RestoreBrickCol:
     mov rect_height, BRICK_H
     mov dx, BRICK_W
     mov al, draw_color
-    cmp byte ptr bricks[si], 3
+    push dx
+    mov ah, bricks[si]
+    mov dl, ah
+    and ah, 0F0h
+    shr ah, 4
+    and dl, 0Fh
+    sub ah, dl
+    pop dx
+    cmp ah, 3
     je RestoreHard3Brick
-    cmp byte ptr bricks[si], 2
+    cmp ah, 2
     je RestoreHard2Brick
     jmp RestoreBrickReady
 
@@ -1695,6 +2060,107 @@ RestoreNextBrick:
     pop ax
     ret
 RestoreBricksUnderOldBall endp
+
+; ======================================================
+; GAME PROCEDURE: RestoreBricksUnderOldBonus
+; Redraws active bricks touched by the old bonus erase.
+; ======================================================
+RestoreBricksUnderOldBonus proc
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+
+    xor si, si
+    mov bx, BRICK_START_Y
+    mov scan_row, 0
+
+RestoreBonusBrickRow:
+    mov cx, BRICK_START_X
+    mov di, BRICK_COLS
+    xor ax, ax
+    mov al, scan_row
+    push si
+    mov si, ax
+    mov al, row_colors[si]
+    mov draw_color, al
+    pop si
+
+RestoreBonusBrickCol:
+    cmp byte ptr bricks[si], 0
+    je RestoreBonusNextBrick
+
+    mov ax, prev_bonus_x
+    add ax, 9
+    cmp ax, cx
+    jl RestoreBonusNextBrick
+
+    mov ax, cx
+    add ax, BRICK_W
+    mov dx, prev_bonus_x
+    cmp dx, ax
+    jg RestoreBonusNextBrick
+
+    mov ax, prev_bonus_y
+    add ax, 9
+    cmp ax, bx
+    jl RestoreBonusNextBrick
+
+    mov ax, bx
+    add ax, BRICK_H
+    mov dx, prev_bonus_y
+    cmp dx, ax
+    jg RestoreBonusNextBrick
+
+    mov rect_height, BRICK_H
+    mov dx, BRICK_W
+    mov al, draw_color
+    push dx
+    mov ah, bricks[si]
+    mov dl, ah
+    and ah, 0F0h
+    shr ah, 4
+    and dl, 0Fh
+    sub ah, dl
+    pop dx
+    cmp ah, 3
+    je RestoreBonusHard3Brick
+    cmp ah, 2
+    je RestoreBonusHard2Brick
+    jmp RestoreBonusBrickReady
+
+RestoreBonusHard3Brick:
+    mov al, hard3_color
+    jmp RestoreBonusBrickReady
+
+RestoreBonusHard2Brick:
+    mov al, hard2_color
+
+RestoreBonusBrickReady:
+    call DrawRect
+
+RestoreBonusNextBrick:
+    inc si
+    add cx, BRICK_STEP_X
+    dec di
+    jnz RestoreBonusBrickCol
+
+    add bx, BRICK_STEP_Y
+    inc scan_row
+    mov al, active_rows
+    cmp scan_row, al
+    jl RestoreBonusBrickRow
+
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+RestoreBricksUnderOldBonus endp
 
 ; ======================================================
 ; GAME PROCEDURE: DelayFrame
