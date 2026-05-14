@@ -24,6 +24,20 @@ BRICK_STEP_Y    equ 9
     row_colors      db 0Ch, 0Eh, 0Ah, 0Bh, 0Dh, 09h
     hard2_color     db 07h
     hard3_color     db 0Fh
+    scores_filename db 'SCORES.DAT', 0
+    scores_txt_filename db 'SCORES.TXT', 0
+    file_handle     dw 0
+    scores_buffer   db 256 dup(0)
+    score_text_line db 40 dup(0)
+    score_text_len  dw 0
+    score_line_ptr  dw 0
+    score_record_ptr dw 0
+    score_rank_char db '1'
+    score_file_line1 db '1. ----', 0, 32 dup(0)
+    score_file_line2 db '2. ----', 0, 32 dup(0)
+    score_file_line3 db '3. ----', 0, 32 dup(0)
+    score_file_line4 db '4. ----', 0, 32 dup(0)
+    score_file_line5 db '5. ----', 0, 32 dup(0)
     rect_height     dw 10
 
     wide_box_top    db '+-------------------------------+', 0
@@ -105,6 +119,7 @@ BRICK_STEP_Y    equ 9
     lives           db 3
     bricks_left     db BRICK_COUNT
     game_result     db 0 ; 0=lost, 1=level complete
+    score_saved     db 0
     bricks          db BRICK_COUNT dup(10h) ; 00h=broken, high nibble=required hits, low nibble=hits taken
     draw_index      dw 0
     draw_row        db 0
@@ -584,25 +599,39 @@ ScoreBox:
     mov bl, 0Bh ; Light Cyan
     call PrintString
 
-    mov dh, 8
+    call LoadScores
+
+    mov dh, 7
     mov dl, 7
-    mov si, offset score_1
+    mov si, offset score_file_line1
     mov bl, 0Eh ; Yellow for 1st
     call PrintString
 
-    mov dh, 10
+    mov dh, 9
     mov dl, 7
-    mov si, offset score_2
+    mov si, offset score_file_line2
     mov bl, 07h ; Light Gray for 2nd
     call PrintString
 
-    mov dh, 12
+    mov dh, 11
     mov dl, 7
-    mov si, offset score_3
+    mov si, offset score_file_line3
     mov bl, 06h ; Brown/Orange for 3rd
     call PrintString
 
-    mov dh, 14
+    mov dh, 13
+    mov dl, 7
+    mov si, offset score_file_line4
+    mov bl, 0Bh
+    call PrintString
+
+    mov dh, 15
+    mov dl, 7
+    mov si, offset score_file_line5
+    mov bl, 0Ah
+    call PrintString
+
+    mov dh, 19
     mov dl, 10
     mov si, offset instr_ret
     mov bl, 08h ; Dark Gray
@@ -760,6 +789,11 @@ StartLevelRun:
     mov al, active_bricks
     mov bricks_left, al
     mov lives, 3
+    cmp hud_level[7], '1'
+    jne KeepScoreSavedFlag
+    mov score_saved, 0
+
+KeepScoreSavedFlag:
     mov ax, base_frame_delay
     mov frame_delay, ax
     mov bonus_active, 0
@@ -929,6 +963,7 @@ InitGame proc
 
     mov al, active_bricks
     mov bricks_left, al
+    mov score_saved, 0
     mov bonus_active, 0
     mov bonus_was_drawn, 0
     mov slow_timer, 0
@@ -1041,6 +1076,7 @@ SetPaddleRightEdge:
     jmp NoGameKey
 
 GameInputReturnMenu:
+    call SaveScore
     mov bg_color, 0
     mov current_screen, 2
     jmp NoGameKey
@@ -1109,6 +1145,7 @@ PauseResume:
     jmp PauseDone
 
 PauseReturnMenu:
+    call SaveScore
     mov bg_color, 0
     mov current_screen, 2
 
@@ -1266,6 +1303,7 @@ NoLivesLeft:
     mov game_result, 0
     mov current_screen, 6
     mov bg_color, 0
+    call SaveScore
 
 LoseLifeDone:
     ret
@@ -1281,15 +1319,23 @@ TrySpawnBonus proc
     push bx
     push cx
     push dx
+    push si
 
     cmp bonus_active, 1
     je TrySpawnBonusDone
 
     inc bonus_counter
-    mov al, bonus_counter
-    and al, 03h
-    cmp al, 0
-    jne TrySpawnBonusDone
+    mov ax, ball_x
+    add ax, ball_y
+    add ax, score
+    add ax, frame_delay
+    xor ah, bonus_counter
+    xor dx, dx
+    mov si, 100
+    div si
+    mov al, dl
+    cmp al, 45
+    jae TrySpawnBonusDone
 
     mov ax, cx
     add ax, 6
@@ -1301,13 +1347,15 @@ TrySpawnBonus proc
     mov bonus_y, ax
     mov prev_bonus_y, ax
 
-    inc bonus_type_cycle
-    cmp bonus_type_cycle, 3
-    jbe BonusTypeReady
-    mov bonus_type_cycle, 1
-
-BonusTypeReady:
-    mov al, bonus_type_cycle
+    mov ax, ball_x
+    add ax, frame_delay
+    add ax, score
+    xor ah, bonus_counter
+    xor dx, dx
+    mov si, 3
+    div si
+    mov al, dl
+    inc al
     mov bonus_type, al
     cmp al, 1
     je SpawnSlowBonus
@@ -1334,6 +1382,7 @@ SpawnBonusReady:
     mov hud_dirty, 1
 
 TrySpawnBonusDone:
+    pop si
     pop dx
     pop cx
     pop bx
@@ -1409,6 +1458,8 @@ ApplyBonus proc
     push bx
     push cx
     push dx
+
+    call BeepPowerUp
 
     cmp bonus_type, 1
     je ApplySlowBonus
@@ -1559,6 +1610,7 @@ BrickScanCol:
     add score, 10
     mov hud_dirty, 1
     dec bricks_left
+    call BeepBrickBreak
     push ax
     push dx
     mov rect_height, BRICK_H
@@ -1575,6 +1627,9 @@ BrickScanCol:
     mov game_result, 1
     mov current_screen, 6
     mov bg_color, 0
+    cmp hud_level[7], '3'
+    jne BrickCollisionDone
+    call SaveScore
     jmp BrickCollisionDone
 
 BrickStillAlive:
@@ -2161,6 +2216,487 @@ RestoreBonusNextBrick:
     pop ax
     ret
 RestoreBricksUnderOldBonus endp
+
+; ======================================================
+; PROCEDURE: AppendScoreText
+; Appends every score to SCORES.TXT as readable text.
+; ======================================================
+AppendScoreText proc
+    push ax
+    push bx
+    push cx
+    push dx
+
+    call BuildScoreTextLine
+
+    mov ah, 3Dh
+    mov al, 2
+    mov dx, offset scores_txt_filename
+    int 21h
+    jnc TextFileOpened
+
+    mov ah, 3Ch
+    mov cx, 0
+    mov dx, offset scores_txt_filename
+    int 21h
+    jc AppendScoreTextDone
+
+TextFileOpened:
+    mov file_handle, ax
+
+    mov ah, 42h
+    mov al, 2
+    mov bx, file_handle
+    xor cx, cx
+    xor dx, dx
+    int 21h
+
+    mov ah, 40h
+    mov bx, file_handle
+    mov cx, score_text_len
+    mov dx, offset score_text_line
+    int 21h
+
+    mov ah, 3Eh
+    mov bx, file_handle
+    int 21h
+
+AppendScoreTextDone:
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+AppendScoreText endp
+
+; ======================================================
+; PROCEDURE: BuildScoreTextLine
+; Builds "NAME - 0000", CR, LF for the text score log.
+; ======================================================
+BuildScoreTextLine proc
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+
+    mov di, offset score_text_line
+    mov cx, 40
+ClearScoreTextLine:
+    mov byte ptr [di], 0
+    inc di
+    loop ClearScoreTextLine
+
+    mov di, offset score_text_line
+    mov si, offset player_name
+    mov cx, 15
+CopyScoreTextName:
+    mov al, [si]
+    cmp al, 0
+    je ScoreTextNameDone
+    mov [di], al
+    inc si
+    inc di
+    loop CopyScoreTextName
+
+ScoreTextNameDone:
+    mov byte ptr [di], ' '
+    inc di
+    mov byte ptr [di], '-'
+    inc di
+    mov byte ptr [di], ' '
+    inc di
+
+    mov ax, score
+    cmp ax, 9999
+    jbe ScoreTextInRange
+    mov ax, 9999
+
+ScoreTextInRange:
+    add di, 3
+    mov bx, 10
+    mov cx, 4
+ScoreTextDigitLoop:
+    xor dx, dx
+    div bx
+    add dl, '0'
+    mov [di], dl
+    dec di
+    loop ScoreTextDigitLoop
+
+    add di, 5
+    mov byte ptr [di], 13
+    inc di
+    mov byte ptr [di], 10
+    inc di
+
+    mov ax, di
+    sub ax, offset score_text_line
+    mov score_text_len, ax
+
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+BuildScoreTextLine endp
+
+; ======================================================
+; PROCEDURE: SaveScore
+; Saves current player name and score to SCORES.DAT.
+; ======================================================
+SaveScore proc
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+    push es
+
+    cmp score_saved, 1
+    je SaveScoreDone
+    mov score_saved, 1
+
+    call AppendScoreText
+
+    call ClearScoresBuffer
+
+    mov ah, 3Dh
+    mov al, 0
+    mov dx, offset scores_filename
+    int 21h
+    jc SaveScoreFindSlot
+
+    mov file_handle, ax
+    mov ah, 3Fh
+    mov bx, file_handle
+    mov cx, 90
+    mov dx, offset scores_buffer
+    int 21h
+
+    mov ah, 3Eh
+    mov bx, file_handle
+    int 21h
+
+SaveScoreFindSlot:
+    xor si, si
+    mov cx, 5
+    mov ax, score
+FindScoreSlot:
+    cmp ax, word ptr scores_buffer[si+16]
+    jae InsertScoreSlot
+    add si, 18
+    loop FindScoreSlot
+    jmp WriteTopScores
+
+InsertScoreSlot:
+    mov bx, si
+    mov cx, 72
+    sub cx, bx
+    jcxz CopyCurrentScore
+
+    push ds
+    pop es
+    mov si, offset scores_buffer
+    add si, 71
+    mov di, offset scores_buffer
+    add di, 89
+    std
+    rep movsb
+    cld
+
+CopyCurrentScore:
+    mov di, offset scores_buffer
+    add di, bx
+    mov si, offset player_name
+    mov cx, 16
+    rep movsb
+    mov ax, score
+    mov word ptr [di], ax
+
+WriteTopScores:
+    mov ah, 3Ch
+    mov cx, 0
+    mov dx, offset scores_filename
+    int 21h
+    jc SaveScoreDone
+
+    mov file_handle, ax
+
+    mov ah, 40h
+    mov bx, file_handle
+    mov cx, 90
+    mov dx, offset scores_buffer
+    int 21h
+
+    mov ah, 3Eh
+    mov bx, file_handle
+    int 21h
+
+SaveScoreDone:
+    pop es
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+SaveScore endp
+
+; ======================================================
+; PROCEDURE: LoadScores
+; Loads the saved score and prepares its display line.
+; ======================================================
+LoadScores proc
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+
+    call ClearScoresBuffer
+
+    mov ah, 3Dh
+    mov al, 0
+    mov dx, offset scores_filename
+    int 21h
+    jc LoadScoresDone
+
+    mov file_handle, ax
+
+    mov ah, 3Fh
+    mov bx, file_handle
+    mov cx, 90
+    mov dx, offset scores_buffer
+    int 21h
+
+    push ax
+    mov ah, 3Eh
+    mov bx, file_handle
+    int 21h
+    pop ax
+
+LoadScoresDone:
+    mov si, offset scores_buffer
+    mov di, offset score_file_line1
+    mov bl, '1'
+    call BuildScoreLine
+
+    mov si, offset scores_buffer
+    add si, 18
+    mov di, offset score_file_line2
+    mov bl, '2'
+    call BuildScoreLine
+
+    mov si, offset scores_buffer
+    add si, 36
+    mov di, offset score_file_line3
+    mov bl, '3'
+    call BuildScoreLine
+
+    mov si, offset scores_buffer
+    add si, 54
+    mov di, offset score_file_line4
+    mov bl, '4'
+    call BuildScoreLine
+
+    mov si, offset scores_buffer
+    add si, 72
+    mov di, offset score_file_line5
+    mov bl, '5'
+    call BuildScoreLine
+
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+LoadScores endp
+
+; ======================================================
+; PROCEDURE: ClearScoresBuffer
+; Clears the five-record high-score table buffer.
+; ======================================================
+ClearScoresBuffer proc
+    push ax
+    push cx
+    push di
+
+    mov di, offset scores_buffer
+    mov cx, 90
+ClearScoresLoop:
+    mov byte ptr [di], 0
+    inc di
+    loop ClearScoresLoop
+
+    pop di
+    pop cx
+    pop ax
+    ret
+ClearScoresBuffer endp
+
+; ======================================================
+; PROCEDURE: BuildScoreLine
+; Inputs: SI=18-byte score record, DI=display line, BL=rank char.
+; ======================================================
+BuildScoreLine proc
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+
+    mov score_line_ptr, di
+    mov score_record_ptr, si
+    mov score_rank_char, bl
+
+    mov cx, 40
+ClearDisplayLine:
+    mov byte ptr [di], 0
+    inc di
+    loop ClearDisplayLine
+
+    mov di, score_line_ptr
+    mov al, score_rank_char
+    mov [di], al
+    inc di
+    mov byte ptr [di], '.'
+    inc di
+    mov byte ptr [di], ' '
+    inc di
+
+    mov si, score_record_ptr
+    cmp word ptr [si+16], 0
+    jne BuildScoreHasRecord
+    cmp byte ptr [si], 0
+    jne BuildScoreHasRecord
+
+    mov byte ptr [di], '-'
+    inc di
+    mov byte ptr [di], '-'
+    inc di
+    mov byte ptr [di], '-'
+    inc di
+    mov byte ptr [di], '-'
+    jmp BuildScoreLineDone
+
+BuildScoreHasRecord:
+    mov cx, 15
+CopySavedName:
+    mov al, [si]
+    cmp al, 0
+    je SavedNameDone
+    mov [di], al
+    inc si
+    inc di
+    loop CopySavedName
+
+SavedNameDone:
+    mov byte ptr [di], ' '
+    inc di
+    mov byte ptr [di], '-'
+    inc di
+    mov byte ptr [di], ' '
+    inc di
+
+    mov si, score_record_ptr
+    mov ax, word ptr [si+16]
+    cmp ax, 9999
+    jbe SavedScoreInRange
+    mov ax, 9999
+
+SavedScoreInRange:
+    add di, 3
+    mov bx, 10
+    mov cx, 4
+SavedScoreDigitLoop:
+    xor dx, dx
+    div bx
+    add dl, '0'
+    mov [di], dl
+    dec di
+    loop SavedScoreDigitLoop
+
+BuildScoreLineDone:
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+BuildScoreLine endp
+
+; ======================================================
+; PROCEDURE: BeepBrickBreak
+; Plays a short high beep when a brick breaks.
+; ======================================================
+BeepBrickBreak proc
+    push ax
+    push cx
+
+    mov al, 0B6h
+    out 43h, al
+    mov al, 60h
+    out 42h, al
+    xor al, al
+    out 42h, al
+    in al, 61h
+    or al, 03h
+    out 61h, al
+
+    mov cx, 1500
+BrickBeepLoop:
+    loop BrickBeepLoop
+
+    in al, 61h
+    and al, 0FCh
+    out 61h, al
+
+    pop cx
+    pop ax
+    ret
+BeepBrickBreak endp
+
+; ======================================================
+; PROCEDURE: BeepPowerUp
+; Plays a medium beep when a power-up is collected.
+; ======================================================
+BeepPowerUp proc
+    push ax
+    push cx
+
+    mov al, 0B6h
+    out 43h, al
+    mov al, 80h
+    out 42h, al
+    xor al, al
+    out 42h, al
+    in al, 61h
+    or al, 03h
+    out 61h, al
+
+    mov cx, 2200
+PowerUpBeepLoop:
+    loop PowerUpBeepLoop
+
+    in al, 61h
+    and al, 0FCh
+    out 61h, al
+
+    pop cx
+    pop ax
+    ret
+BeepPowerUp endp
 
 ; ======================================================
 ; GAME PROCEDURE: DelayFrame
