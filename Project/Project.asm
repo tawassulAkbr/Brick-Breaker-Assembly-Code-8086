@@ -58,9 +58,9 @@ BRICK_STEP_Y    equ 9
     instr_ret       db 'Press Enter/Backspace', 0
 
     score_title     db 'HIGH SCORES', 0
-    score_1         db '1. Tawassul - 5000', 0
-    score_2         db '2. Zubair - 4000', 0
-    score_3         db '3. Zain - 3000', 0
+    score_line1     db 32 dup(0)
+    score_line2     db 32 dup(0)
+    score_line3     db 32 dup(0)
     
     hud_score       db 'Score: 0000', 0
     hud_lives       db 'Lives: 3', 0
@@ -126,13 +126,11 @@ BRICK_STEP_Y    equ 9
     bonus_dy        dw 2
     slow_timer      dw 0
     bonus_wide_active db 0
-    trail_enabled   db 1
-
     ; ====== FILE I/O DATA ======
-    scores_filename db "SCORES.DAT", 0
+    scores_filename db 'SCORES.DAT', 0
     file_handle     dw 0
-    scores_buffer   db 256 dup(0)
-    buffer_index    dw 0
+    ; Each record: 16 bytes name + 2 bytes score (word) = 18 bytes, 3 records = 54 bytes
+    scores_buffer   db 54 dup(0)
 
 .code
 main proc
@@ -591,21 +589,24 @@ ScoreBox:
     mov bl, 0Bh ; Light Cyan
     call PrintString
 
+    ; Load scores from file and build display strings
+    call LoadScores
+
     mov dh, 8
     mov dl, 7
-    mov si, offset score_1
+    mov si, offset score_line1
     mov bl, 0Eh ; Yellow for 1st
     call PrintString
 
     mov dh, 10
     mov dl, 7
-    mov si, offset score_2
+    mov si, offset score_line2
     mov bl, 07h ; Light Gray for 2nd
     call PrintString
 
     mov dh, 12
     mov dl, 7
-    mov si, offset score_3
+    mov si, offset score_line3
     mov bl, 06h ; Brown/Orange for 3rd
     call PrintString
 
@@ -2395,8 +2396,10 @@ PrintChar_Mode13h endp
 
 ; ======================================================
 ; PROCEDURE: SaveScore
-; Saves current player name and score to SCORES.DAT
-; Called when game ends
+; Reads SCORES.DAT (top 3), inserts current score if it
+; qualifies, and writes the updated leaderboard back.
+; Record format: 16 bytes name + 2 bytes score = 18 bytes
+; File size: 3 records x 18 bytes = 54 bytes
 ; ======================================================
 SaveScore proc
     push ax
@@ -2405,36 +2408,113 @@ SaveScore proc
     push dx
     push si
     push di
+    push es
 
-    ; Open/Create scores file for writing
-    mov ah, 3Ch          ; Create file
-    mov cx, 0            ; Normal file
+    ; --- Clear scores_buffer ---
+    push ds
+    pop es
+    mov di, offset scores_buffer
+    mov cx, 54
+    xor al, al
+    rep stosb
+
+    ; --- Try to read existing file ---
+    mov ah, 3Dh
+    mov al, 0
     mov dx, offset scores_filename
     int 21h
-    jc SaveScoreDone
+    jc SSInsert
 
     mov file_handle, ax
-
-    ; Write player name (16 bytes)
-    mov ah, 40h          ; Write to file
+    mov ah, 3Fh
     mov bx, file_handle
-    mov cx, 16
-    mov dx, offset player_name
+    mov cx, 54
+    mov dx, offset scores_buffer
     int 21h
-
-    ; Write score (2 bytes)
-    mov ah, 40h
-    mov bx, file_handle
-    mov cx, 2
-    mov dx, offset score
-    int 21h
-
-    ; Close file
     mov ah, 3Eh
     mov bx, file_handle
     int 21h
 
-SaveScoreDone:
+SSInsert:
+    ; --- Find insertion slot (descending order) ---
+    xor si, si
+    mov cx, 3
+    mov ax, score
+SSFindSlot:
+    mov bx, word ptr scores_buffer[si+16]
+    cmp bx, 0
+    je SSDoInsert
+    cmp ax, bx
+    ja SSDoInsert
+    add si, 18
+    loop SSFindSlot
+    jmp SSWrite          ; score too low for top 3
+
+SSDoInsert:
+    ; Shift existing records from [SI..35] down to [SI+18..53]
+    ; Always copy backward to avoid overwriting src before reading it.
+    ; src end is always byte 35 (end of 2nd record), dest end is always 53.
+    cmp si, 36
+    je SSCopy            ; last slot — no shift needed
+    mov di, 53           ; dest end (byte 53)
+    mov bx, 35           ; src end is ALWAYS byte 35, never SI+17
+    mov cx, 36
+    sub cx, si           ; bytes to shift = 36 - SI
+SSShift:
+    mov al, scores_buffer[bx]
+    mov scores_buffer[di], al
+    dec bx
+    dec di
+    loop SSShift
+
+SSCopy:
+    ; Zero out the target slot
+    push si
+    mov di, si
+    mov cx, 18
+SSZero:
+    mov byte ptr scores_buffer[di], 0
+    inc di
+    loop SSZero
+    pop si
+
+    ; Copy player_name into scores_buffer[SI..SI+15]
+    push si
+    mov bx, si
+    mov si, offset player_name
+    mov cx, 16
+SSNameCopy:
+    mov al, [si]
+    mov scores_buffer[bx], al
+    inc si
+    inc bx
+    loop SSNameCopy
+    pop si
+
+    ; Write score word at scores_buffer[SI+16]
+    mov ax, score
+    mov word ptr scores_buffer[si+16], ax
+
+SSWrite:
+    ; Write all 54 bytes back to disk
+    mov ah, 3Ch
+    mov cx, 0
+    mov dx, offset scores_filename
+    int 21h
+    jc SSDone
+
+    mov file_handle, ax
+    mov ah, 40h
+    mov bx, file_handle
+    mov cx, 54
+    mov dx, offset scores_buffer
+    int 21h
+    mov ah, 3Eh
+    mov bx, file_handle
+    int 21h
+
+SSDone:
+    pop es
     pop di
     pop si
     pop dx
@@ -2443,6 +2523,165 @@ SaveScoreDone:
     pop ax
     ret
 SaveScore endp
+
+; ======================================================
+; PROCEDURE: LoadScores
+; Reads SCORES.DAT and fills score_line1/2/3 buffers
+; ======================================================
+LoadScores proc
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+    push es
+
+    ; Clear scores_buffer
+    push ds
+    pop es
+    mov di, offset scores_buffer
+    mov cx, 54
+    xor al, al
+    rep stosb
+
+    ; Open file for reading
+    mov ah, 3Dh
+    mov al, 0
+    mov dx, offset scores_filename
+    int 21h
+    jc LoadBuildLines    ; No file yet — show empty lines
+
+    mov file_handle, ax
+    mov ah, 3Fh
+    mov bx, file_handle
+    mov cx, 54
+    mov dx, offset scores_buffer
+    int 21h
+    mov ah, 3Eh
+    mov bx, file_handle
+    int 21h
+
+LoadBuildLines:
+    mov si, 0
+    mov di, offset score_line1
+    mov bl, '1'
+    call BuildScoreLine
+
+    mov si, 18
+    mov di, offset score_line2
+    mov bl, '2'
+    call BuildScoreLine
+
+    mov si, 36
+    mov di, offset score_line3
+    mov bl, '3'
+    call BuildScoreLine
+
+    pop es
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+LoadScores endp
+
+; ======================================================
+; PROCEDURE: BuildScoreLine
+; SI = record offset in scores_buffer (0, 18, or 36)
+; DI = address of target display buffer (score_lineN)
+; BL = rank char ('1','2','3')
+; Output: null-terminated "N. NAME - NNNN"
+; ======================================================
+BuildScoreLine proc
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+
+    ; Clear 32-byte destination buffer
+    push di
+    mov cx, 32
+    xor al, al
+ClearLine:
+    mov [di], al
+    inc di
+    loop ClearLine
+    pop di
+
+    ; Write "N. "
+    mov [di], bl
+    inc di
+    mov byte ptr [di], '.'
+    inc di
+    mov byte ptr [di], ' '
+    inc di
+
+    ; Check if slot is empty
+    cmp byte ptr scores_buffer[si], 0
+    jne HasRecord
+    cmp word ptr scores_buffer[si+16], 0
+    je WriteEmpty
+
+HasRecord:
+    ; Copy name (up to 15 chars)
+    push si
+    mov cx, 15
+CopyName:
+    mov al, scores_buffer[si]
+    cmp al, 0
+    je NameDone
+    mov [di], al
+    inc di
+    inc si
+    loop CopyName
+NameDone:
+    pop si
+
+    ; Write " - "
+    mov byte ptr [di], ' '
+    inc di
+    mov byte ptr [di], '-'
+    inc di
+    mov byte ptr [di], ' '
+    inc di
+
+    ; Convert score to 4 decimal digits (right to left)
+    mov ax, word ptr scores_buffer[si+16]
+    add di, 3
+    mov bx, 10
+    mov cx, 4
+DigitLoop:
+    xor dx, dx
+    div bx
+    add dl, '0'
+    mov [di], dl
+    dec di
+    loop DigitLoop
+    jmp BuildLineDone
+
+WriteEmpty:
+    mov byte ptr [di], '-'
+    inc di
+    mov byte ptr [di], '-'
+    inc di
+    mov byte ptr [di], '-'
+    inc di
+    mov byte ptr [di], '-'
+
+BuildLineDone:
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+BuildScoreLine endp
 
 ; ======================================================
 ; PROCEDURE: BeepBrickBreak
