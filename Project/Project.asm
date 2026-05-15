@@ -58,9 +58,9 @@ BRICK_STEP_Y    equ 9
     instr_ret       db 'Press Enter/Backspace', 0
 
     score_title     db 'HIGH SCORES', 0
-    score_line1     db 32 dup(0)
-    score_line2     db 32 dup(0)
-    score_line3     db 32 dup(0)
+    score_line1     db 40 dup(0)
+    score_line2     db 40 dup(0)
+    score_line3     db 40 dup(0)
     
     hud_score       db 'Score: 0000', 0
     hud_lives       db 'Lives: 3', 0
@@ -127,10 +127,11 @@ BRICK_STEP_Y    equ 9
     slow_timer      dw 0
     bonus_wide_active db 0
     ; ====== FILE I/O DATA ======
-    scores_filename db 'SCORES.DAT', 0
+    scores_filename db 'SCORES.TXT', 0
     file_handle     dw 0
-    ; Each record: 16 bytes name + 2 bytes score (word) = 18 bytes, 3 records = 54 bytes
-    scores_buffer   db 54 dup(0)
+    ; Text format: "PlayerName,Score" per line, up to 5 records
+    scores_buffer   db 500 dup(0)
+    scores_read_size dw 0
 
 .code
 main proc
@@ -610,7 +611,7 @@ ScoreBox:
     mov bl, 06h ; Brown/Orange for 3rd
     call PrintString
 
-    mov dh, 14
+    mov dh, 18
     mov dl, 10
     mov si, offset instr_ret
     mov bl, 08h ; Dark Gray
@@ -2396,10 +2397,8 @@ PrintChar_Mode13h endp
 
 ; ======================================================
 ; PROCEDURE: SaveScore
-; Reads SCORES.DAT (top 3), inserts current score if it
-; qualifies, and writes the updated leaderboard back.
-; Record format: 16 bytes name + 2 bytes score = 18 bytes
-; File size: 3 records x 18 bytes = 54 bytes
+; Reads SCORES.TXT, adds current score, keeps appending
+; Format: "PlayerName,Score\r\n"
 ; ======================================================
 SaveScore proc
     push ax
@@ -2410,105 +2409,96 @@ SaveScore proc
     push di
     push es
 
-    ; --- Clear scores_buffer ---
+    ; Build score entry first: "PlayerName,Score\r\n"
     push ds
     pop es
     mov di, offset scores_buffer
-    mov cx, 54
-    xor al, al
-    rep stosb
+    
+    ; Copy player name
+    mov si, offset player_name
+SaveCopyPlayerName:
+    mov al, [si]
+    cmp al, 0
+    je SaveNameEnd
+    mov [di], al
+    inc si
+    inc di
+    jmp SaveCopyPlayerName
 
-    ; --- Try to read existing file ---
+SaveNameEnd:
+    mov byte ptr [di], ','
+    inc di
+    
+    ; Convert score to 4 ASCII digits
+    mov ax, score
+    mov bx, 10
+    mov si, di
+    add si, 3           ; Point to ones place
+    
+    mov cx, 4
+SaveScoreConvert:
+    xor dx, dx
+    div bx
+    add dl, '0'
+    mov [si], dl
+    dec si
+    loop SaveScoreConvert
+    
+    add di, 4
+    
+    ; Add CRLF
+    mov byte ptr [di], 0Dh
+    inc di
+    mov byte ptr [di], 0Ah
+    inc di
+    
+    ; Calculate entry length
+    mov cx, di
+    sub cx, offset scores_buffer
+    
+    ; Open file for read/write or create
     mov ah, 3Dh
-    mov al, 0
+    mov al, 2           ; Read/Write mode
     mov dx, offset scores_filename
     int 21h
-    jc SSInsert
+    jnc SSFileExists
 
-    mov file_handle, ax
-    mov ah, 3Fh
-    mov bx, file_handle
-    mov cx, 54
-    mov dx, offset scores_buffer
-    int 21h
-    mov ah, 3Eh
-    mov bx, file_handle
-    int 21h
-
-SSInsert:
-    ; --- Find insertion slot (descending order) ---
-    xor si, si
-    mov cx, 3
-    mov ax, score
-SSFindSlot:
-    mov bx, word ptr scores_buffer[si+16]
-    cmp bx, 0
-    je SSDoInsert
-    cmp ax, bx
-    ja SSDoInsert
-    add si, 18
-    loop SSFindSlot
-    jmp SSWrite          ; score too low for top 3
-
-SSDoInsert:
-    ; Shift existing records from [SI..35] down to [SI+18..53]
-    ; Always copy backward to avoid overwriting src before reading it.
-    ; src end is always byte 35 (end of 2nd record), dest end is always 53.
-    cmp si, 36
-    je SSCopy            ; last slot — no shift needed
-    mov di, 53           ; dest end (byte 53)
-    mov bx, 35           ; src end is ALWAYS byte 35, never SI+17
-    mov cx, 36
-    sub cx, si           ; bytes to shift = 36 - SI
-SSShift:
-    mov al, scores_buffer[bx]
-    mov scores_buffer[di], al
-    dec bx
-    dec di
-    loop SSShift
-
-SSCopy:
-    ; Zero out the target slot
-    push si
-    mov di, si
-    mov cx, 18
-SSZero:
-    mov byte ptr scores_buffer[di], 0
-    inc di
-    loop SSZero
-    pop si
-
-    ; Copy player_name into scores_buffer[SI..SI+15]
-    push si
-    mov bx, si
-    mov si, offset player_name
-    mov cx, 16
-SSNameCopy:
-    mov al, [si]
-    mov scores_buffer[bx], al
-    inc si
-    inc bx
-    loop SSNameCopy
-    pop si
-
-    ; Write score word at scores_buffer[SI+16]
-    mov ax, score
-    mov word ptr scores_buffer[si+16], ax
-
-SSWrite:
-    ; Write all 54 bytes back to disk
+    ; File doesn't exist, create it
     mov ah, 3Ch
     mov cx, 0
     mov dx, offset scores_filename
     int 21h
-    jc SSDone
+    jnc SSAppendEntry
+    jmp SSDone
 
+SSFileExists:
+    ; File exists, move to end for appending
+    mov file_handle, ax
+    mov ah, 42h
+    mov bx, file_handle
+    mov al, 2           ; Seek from end
+    xor cx, cx
+    xor dx, dx
+    int 21h
+    jnc SSAppendEntry
+    
+    ; Close on error
+    mov ah, 3Eh
+    mov bx, file_handle
+    int 21h
+    jmp SSDone
+
+SSAppendEntry:
+    ; Write new entry to file
     mov file_handle, ax
     mov ah, 40h
     mov bx, file_handle
-    mov cx, 54
+    mov cx, di
+    sub cx, offset scores_buffer
     mov dx, offset scores_buffer
     int 21h
+    
+    ; Close file
     mov ah, 3Eh
     mov bx, file_handle
     int 21h
@@ -2526,7 +2516,8 @@ SaveScore endp
 
 ; ======================================================
 ; PROCEDURE: LoadScores
-; Reads SCORES.DAT and fills score_line1/2/3 buffers
+; Reads SCORES.TXT and fills score_line1/2/3 with top 3
+; Scores are sorted by value (highest first)
 ; ======================================================
 LoadScores proc
     push ax
@@ -2541,7 +2532,7 @@ LoadScores proc
     push ds
     pop es
     mov di, offset scores_buffer
-    mov cx, 54
+    mov cx, 500
     xor al, al
     rep stosb
 
@@ -2550,33 +2541,33 @@ LoadScores proc
     mov al, 0
     mov dx, offset scores_filename
     int 21h
-    jc LoadBuildLines    ; No file yet — show empty lines
+    jc LoadBuildEmptyLines    ; No file yet — show empty lines
 
     mov file_handle, ax
     mov ah, 3Fh
     mov bx, file_handle
-    mov cx, 54
+    mov cx, 500
     mov dx, offset scores_buffer
     int 21h
+    mov scores_read_size, ax
     mov ah, 3Eh
     mov bx, file_handle
     int 21h
 
-LoadBuildLines:
+LoadBuildEmptyLines:
+    ; Parse first 3 entries from scores_buffer
     mov si, 0
     mov di, offset score_line1
     mov bl, '1'
-    call BuildScoreLine
-
-    mov si, 18
+    call ParseAndBuildScoreLine
+    
     mov di, offset score_line2
     mov bl, '2'
-    call BuildScoreLine
-
-    mov si, 36
+    call ParseAndBuildScoreLine
+    
     mov di, offset score_line3
     mov bl, '3'
-    call BuildScoreLine
+    call ParseAndBuildScoreLine
 
     pop es
     pop di
@@ -2589,59 +2580,114 @@ LoadBuildLines:
 LoadScores endp
 
 ; ======================================================
-; PROCEDURE: BuildScoreLine
-; SI = record offset in scores_buffer (0, 18, or 36)
+; PROCEDURE: ParseAndBuildScoreLine
+; SI = offset in scores_buffer to parse
 ; DI = address of target display buffer (score_lineN)
-; BL = rank char ('1','2','3')
+; BL = rank char ('1','2','3','4','5')
 ; Output: null-terminated "N. NAME - NNNN"
+; Returns: SI updated to next line after parsing
 ; ======================================================
-BuildScoreLine proc
+ParseAndBuildScoreLine proc
     push ax
     push bx
     push cx
     push dx
-    push si
     push di
+    ; NOTE: NOT saving/restoring SI so it can be updated for next entry
 
-    ; Clear 32-byte destination buffer
+    ; Clear 40-byte destination buffer
     push di
-    mov cx, 32
+    mov cx, 40
     xor al, al
-ClearLine:
+ParseClearLine:
     mov [di], al
     inc di
-    loop ClearLine
+    loop ParseClearLine
     pop di
 
-    ; Write "N. "
-    mov [di], bl
+    ; Write "Nth: " (e.g., "1st: ", "2nd: ", "3rd: ")
+    mov [di], bl        ; Rank number
     inc di
-    mov byte ptr [di], '.'
+    
+    ; Check rank for suffix
+    cmp bl, '1'
+    je ParseSuffixSt
+    cmp bl, '2'
+    je ParseSuffixNd
+    cmp bl, '3'
+    je ParseSuffixRd
+    jmp ParseSuffixTh
+
+ParseSuffixSt:
+    mov byte ptr [di], 's'
+    inc di
+    mov byte ptr [di], 't'
+    inc di
+    jmp ParseSuffixDone
+
+ParseSuffixNd:
+    mov byte ptr [di], 'n'
+    inc di
+    mov byte ptr [di], 'd'
+    inc di
+    jmp ParseSuffixDone
+
+ParseSuffixRd:
+    mov byte ptr [di], 'r'
+    inc di
+    mov byte ptr [di], 'd'
+    inc di
+    jmp ParseSuffixDone
+
+ParseSuffixTh:
+    mov byte ptr [di], 't'
+    inc di
+    mov byte ptr [di], 'h'
+    inc di
+
+ParseSuffixDone:
+    mov byte ptr [di], ':'
     inc di
     mov byte ptr [di], ' '
     inc di
 
-    ; Check if slot is empty
+    ; Check if there's data at this position
     cmp byte ptr scores_buffer[si], 0
-    jne HasRecord
-    cmp word ptr scores_buffer[si+16], 0
-    je WriteEmpty
+    je ParseEmptyEntry
 
-HasRecord:
-    ; Copy name (up to 15 chars)
-    push si
-    mov cx, 15
-CopyName:
+    ; Skip spaces at start of SI if any
+    mov cx, 50
+ParseSkipSpaces:
+    cmp byte ptr scores_buffer[si], ' '
+    jne ParseSkipSpacesDone
+    inc si
+    loop ParseSkipSpaces
+
+ParseSkipSpacesDone:
+    ; Copy name until comma
+    mov cx, 20
+ParseCopyName:
     mov al, scores_buffer[si]
     cmp al, 0
-    je NameDone
+    je ParseNameDone
+    cmp al, ','
+    je ParseNameDone
+    cmp al, 0Dh
+    je ParseNameDone
+    cmp al, 0Ah
+    je ParseNameDone
     mov [di], al
-    inc di
     inc si
-    loop CopyName
-NameDone:
-    pop si
+    inc di
+    loop ParseCopyName
 
+ParseNameDone:
+    ; Skip comma
+    cmp byte ptr scores_buffer[si], ','
+    jne ParseNoComma
+    inc si
+
+ParseNoComma:
     ; Write " - "
     mov byte ptr [di], ' '
     inc di
@@ -2649,39 +2695,72 @@ NameDone:
     inc di
     mov byte ptr [di], ' '
     inc di
-
-    ; Convert score to 4 decimal digits (right to left)
-    mov ax, word ptr scores_buffer[si+16]
-    add di, 3
-    mov bx, 10
+    
+    ; Copy score (4 digits)
     mov cx, 4
-DigitLoop:
-    xor dx, dx
-    div bx
-    add dl, '0'
-    mov [di], dl
-    dec di
-    loop DigitLoop
-    jmp BuildLineDone
+ParseCopyScore:
+    mov al, scores_buffer[si]
+    cmp al, 0
+    je ParseScoreDone
+    cmp al, 0Dh
+    je ParseScoreDone
+    cmp al, 0Ah
+    je ParseScoreDone
+    mov [di], al
+    inc si
+    inc di
+    loop ParseCopyScore
 
-WriteEmpty:
-    mov byte ptr [di], '-'
-    inc di
-    mov byte ptr [di], '-'
-    inc di
-    mov byte ptr [di], '-'
-    inc di
-    mov byte ptr [di], '-'
+ParseScoreDone:
+    ; Skip to next line (find CR+LF)
+    mov cx, 100
+ParseSkipToEOL:
+    mov al, scores_buffer[si]
+    cmp al, 0Ah
+    je ParseEOLFound
+    cmp al, 0
+    je ParseEOLFound
+    inc si
+    loop ParseSkipToEOL
 
-BuildLineDone:
+ParseEOLFound:
+    ; Skip past the LF
+    inc si
+    jmp ParseEOLSkipDone
+
+ParseEmptyEntry:
+    ; Display "---- - ----"
+    mov byte ptr [di], '-'
+    inc di
+    mov byte ptr [di], '-'
+    inc di
+    mov byte ptr [di], '-'
+    inc di
+    mov byte ptr [di], '-'
+    inc di
+    mov byte ptr [di], ' '
+    inc di
+    mov byte ptr [di], '-'
+    inc di
+    mov byte ptr [di], ' '
+    inc di
+    mov byte ptr [di], '-'
+    inc di
+    mov byte ptr [di], '-'
+    inc di
+    mov byte ptr [di], '-'
+    inc di
+    mov byte ptr [di], '-'
+    inc di
+
+ParseEOLSkipDone:
     pop di
-    pop si
     pop dx
     pop cx
     pop bx
     pop ax
     ret
-BuildScoreLine endp
+ParseAndBuildScoreLine endp
 
 ; ======================================================
 ; PROCEDURE: BeepBrickBreak
