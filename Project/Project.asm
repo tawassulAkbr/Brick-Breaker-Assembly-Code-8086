@@ -87,7 +87,8 @@ BRICK_STEP_Y    equ 9
     game_over_title db 'GAME OVER', 0
     level1_done_msg db 'LEVEL 1 COMPLETE!', 0
     level2_done_msg db 'LEVEL 2 COMPLETE!', 0
-    level3_done_msg db 'YOU BEAT THE GAME!', 0
+    level3_done_msg db 'LEVEL 3 COMPLETE!', 0
+    you_win_msg     db '   *** YOU WIN ***   ', 0
     game_over_ret   db 'Press Enter/Backspace', 0
     next_level_msg   db 'Press Enter to continue', 0
     pause_title     db 'PAUSED', 0
@@ -109,6 +110,7 @@ BRICK_STEP_Y    equ 9
     paddle_y        dw 184
     prev_paddle_x   dw 130
     prev_paddle_y   dw 184
+    prev_mouse_x    dw 0
     ball_x          dw 160
     ball_y          dw 174
     prev_ball_x     dw 160
@@ -681,31 +683,55 @@ ShowGame:
 
 ShowGameOver:
     call MaybeDrawUiBackdrop
+    
+    ; Determine box color: Gold for win, White for others
+    mov bl, 0Fh
+    cmp game_result, 1
+    jne ShowGameOverTop
+    cmp hud_level[7], '3'
+    jne ShowGameOverTop
+    mov bl, 0Eh ; Yellow/Gold
+
+ShowGameOverTop:
     mov dh, 7
     mov dl, 5
     mov si, offset title_box_top
-    mov bl, 0Fh
     call PrintString
 
     mov dh, 8
     mov dl, 15
+    ; Check for overall win (Level 3 complete)
+    cmp game_result, 1
+    jne GameOverTitleLogic
+    cmp hud_level[7], '3'
+    jne GameOverTitleLogic
+    
+    ; Victory!
+    mov dl, 10
+    mov si, offset you_win_msg
+    mov bl, 0Ah ; Light Green for Victory
+    jmp GameOverTitleReady
+
+GameOverTitleLogic:
+    mov dl, 15
     mov si, offset game_over_title
     cmp game_result, 0
-    je GameOverTitleReady
+    je GameOverTitleColor
     
     mov dl, 12
     mov si, offset level1_done_msg
     cmp hud_level[7], '1'
-    je GameOverTitleReady
+    je GameOverTitleColor
     
     mov si, offset level2_done_msg
     cmp hud_level[7], '2'
-    je GameOverTitleReady
+    je GameOverTitleColor
     
     mov si, offset level3_done_msg
 
+GameOverTitleColor:
+    mov bl, 0Ch ; Light Red for others
 GameOverTitleReady:
-    mov bl, 0Ch
     call PrintString
 
     mov dh, 9
@@ -1008,6 +1034,16 @@ InitGame proc
     mov hud_dirty, 1
     call ResetBall
 
+    ; Initialize Mouse
+    mov ax, 0
+    int 33h
+    mov ax, 2 ; Hide cursor
+    int 33h
+    mov ax, 3 ; Capture position
+    int 33h
+    shr cx, 1
+    mov prev_mouse_x, cx
+
     mov di, offset bricks
     xor cx, cx
     mov cl, active_bricks
@@ -1044,6 +1080,12 @@ ResetBall proc
     mov ball_dx, ax
     neg ax
     mov ball_dy, ax
+
+    ; Update mouse tracking to avoid jump
+    mov ax, 3
+    int 33h
+    shr cx, 1
+    mov prev_mouse_x, cx
     ret
 ResetBall endp
 
@@ -1053,10 +1095,13 @@ ResetBall endp
 ; ======================================================
 HandleGameInput proc
     push ax
+    push bx
+    push cx
+    push dx
 
     mov ah, 01h
     int 16h
-    jz NoGameKey
+    jz CheckMouseInput
 
     mov ah, 00h
     int 16h
@@ -1083,7 +1128,39 @@ HandleGameInput proc
     je MovePaddleRight
     cmp al, 'D'
     je MovePaddleRight
-    jmp NoGameKey
+
+CheckMouseInput:
+    ; --- Mouse Movement and Buttons ---
+    mov ax, 3
+    int 33h ; BX=buttons, CX=X
+    
+    ; Mouse Buttons
+    test bx, 1 ; Left
+    jnz MovePaddleLeft
+    test bx, 2 ; Right
+    jnz MovePaddleRight
+
+    ; Mouse Movement
+    shr cx, 1
+    cmp cx, prev_mouse_x
+    je EndGameInput
+    mov prev_mouse_x, cx
+    
+    ; Center paddle
+    sub cx, paddle_half
+    
+    ; Boundaries
+    cmp cx, 4
+    jge MouseNotLeft
+    mov cx, 4
+    jmp StoreMouseX
+MouseNotLeft:
+    cmp cx, paddle_max_x
+    jle StoreMouseX
+    mov cx, paddle_max_x
+StoreMouseX:
+    mov paddle_x, cx
+    jmp EndGameInput
 
 MovePaddleLeft:
     mov ax, paddle_x
@@ -1091,11 +1168,11 @@ MovePaddleLeft:
     jb SetPaddleLeftEdge
     sub ax, 8
     mov paddle_x, ax
-    jmp NoGameKey
+    jmp EndGameInput
 
 SetPaddleLeftEdge:
     mov paddle_x, 4
-    jmp NoGameKey
+    jmp EndGameInput
 
 MovePaddleRight:
     mov ax, paddle_x
@@ -1103,23 +1180,27 @@ MovePaddleRight:
     cmp ax, paddle_max_x
     ja SetPaddleRightEdge
     mov paddle_x, ax
-    jmp NoGameKey
+    jmp EndGameInput
 
 SetPaddleRightEdge:
     mov ax, paddle_max_x
     mov paddle_x, ax
-    jmp NoGameKey
+    jmp EndGameInput
 
 GameInputReturnMenu:
     call SaveScore
     mov bg_color, 0
     mov current_screen, 2
-    jmp NoGameKey
+    jmp EndGameInput
 
 GameInputPause:
     call PauseGame
+    ; Fall through to EndGameInput
 
-NoGameKey:
+EndGameInput:
+    pop dx
+    pop cx
+    pop bx
     pop ax
     ret
 HandleGameInput endp
@@ -1326,6 +1407,7 @@ LoseLife proc
     je LoseLifeDone
 
     dec lives
+    call BeepBallFall
     mov hud_dirty, 1
     cmp lives, 0
     je NoLivesLeft
@@ -2257,40 +2339,60 @@ RestoreBricksUnderOldBonus endp
 ; Appends every score to SCORES.TXT as readable text.
 ; ======================================================
 AppendScoreText proc
-    push ax
-    push bx
-    push cx
-    push dx
+    pusha
+    push ds
+    push es
+
+    ; Ensure DS points to our data segment
+    mov ax, @data
+    mov ds, ax
+    mov es, ax
 
     call BuildScoreTextLine
+    mov cx, score_text_len
+    cmp cx, 0
+    je AppendScoreDone
 
-    mov ah, 3Ch
-    mov cx, 0
+    ; 1. Try to open existing file for Read/Write
+    mov ah, 3Dh
+    mov al, 02h
     mov dx, offset scores_txt
     int 21h
-    jc AppendScoreTextDone   ; If it jumps here, Windows is blocking DOSBox from writing!
+    jnc AppendSeekToEnd
+    
+    ; 2. File doesn't exist? Create it.
+    mov ah, 3Ch
+    xor cx, cx          ; Normal attribute
+    mov dx, offset scores_txt
+    int 21h
+    jc AppendScoreDone  ; If create fails, exit
+    
+    mov bx, ax          ; Handle in BX
+    jmp AppendDoWrite
 
-    mov file_handle, ax
+AppendSeekToEnd:
+    mov bx, ax          ; Handle in BX
+    mov ah, 42h         ; Seek function
+    mov al, 02h         ; Seek from EOF
+    xor cx, cx
+    xor dx, dx
+    int 21h             ; Position pointer at end
 
-    ; 2. FORCE WRITE 30 BYTES
-    mov ah, 40h
-    mov bx, file_handle
-    mov cx, 30
+AppendDoWrite:
+    mov ah, 40h         ; Write to file
+    mov cx, score_text_len
     mov dx, offset score_text_line
     int 21h
 
-    ; 3. CLOSE FILE (Saves it to disk)
-    mov ah, 3Eh
-    mov bx, file_handle
+    mov ah, 3Eh         ; Close file
+    ; BX already has the handle
     int 21h
 
-AppendScoreTextDone:
-    pop dx
-    pop cx
-    pop bx
-    pop ax
+AppendScoreDone:
+    pop es
+    pop ds
+    popa
     ret
-
 AppendScoreText endp
 
 ; ======================================================
@@ -2670,15 +2772,15 @@ BeepBrickBreak proc
 
     mov al, 0B6h
     out 43h, al
-    mov al, 60h
+    mov al, 0E0h ; Higher divisor = lower pitch
     out 42h, al
-    xor al, al
+    mov al, 0Bh  ; Divisor ~3000 -> 400Hz
     out 42h, al
     in al, 61h
     or al, 03h
     out 61h, al
 
-    mov cx, 1500
+    mov cx, 25000
 BrickBeepLoop:
     loop BrickBeepLoop
 
@@ -2701,15 +2803,15 @@ BeepPowerUp proc
 
     mov al, 0B6h
     out 43h, al
-    mov al, 80h
+    mov al, 00h
     out 42h, al
-    xor al, al
+    mov al, 05h  ; Divisor 1280 -> 932Hz (Higher pitch for powerup)
     out 42h, al
     in al, 61h
     or al, 03h
     out 61h, al
 
-    mov cx, 2200
+    mov cx, 50000 ; Longer for powerup
 PowerUpBeepLoop:
     loop PowerUpBeepLoop
 
@@ -2721,6 +2823,49 @@ PowerUpBeepLoop:
     pop ax
     ret
 BeepPowerUp endp
+
+; ======================================================
+; PROCEDURE: BeepBallFall
+; Plays a descending tone (chirp) to simulate the ball falling.
+; ======================================================
+BeepBallFall proc
+    push ax
+    push cx
+    push dx
+
+    mov al, 0B6h
+    out 43h, al
+
+    mov dx, 600  ; High pitch start
+FallSoundLoop:
+    mov al, dl
+    out 42h, al
+    mov al, dh
+    out 42h, al
+    
+    in al, 61h
+    or al, 03h
+    out 61h, al
+    
+    ; Longer delay for better audibility
+    mov cx, 4000
+FallDelay:
+    loop FallDelay
+    
+    add dx, 200  ; Slide pitch down
+    cmp dx, 15000 ; End in deep rumble
+    jl FallSoundLoop
+
+    ; Ensure speaker is OFF
+    in al, 61h
+    and al, 0FCh
+    out 61h, al
+
+    pop dx
+    pop cx
+    pop ax
+    ret
+BeepBallFall endp
 
 ; ======================================================
 ; GAME PROCEDURE: DelayFrame
