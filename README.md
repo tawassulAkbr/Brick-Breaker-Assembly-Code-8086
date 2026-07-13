@@ -128,4 +128,3 @@ Real-time rendering
 The player controls a paddle to bounce the ball and break all bricks on the screen.
 Completing all bricks advances the player to the next level. Missing the ball reduces lives.
 The game ends when all lives are lost or all levels are completed.
-
